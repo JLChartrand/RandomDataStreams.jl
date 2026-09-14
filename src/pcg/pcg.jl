@@ -267,7 +267,8 @@ rand(rng::PCGRNG, ::Random.SamplerType{UInt64}) = next(rng)
 """
 Return a random Float64 in [0, 1).
 """
-rand(rng::PCGRNG) = next(rng) / (UInt64(0) - 1)
+rand(rng::PCGRNG) =
+    reinterpret(Float64, 0x3ff0000000000000 | (next(rng) & 0x000fffffffffffff)) - 1.0
 
 """
 Generates a `Float32` from a PCG generator.

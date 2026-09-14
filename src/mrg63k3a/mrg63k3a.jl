@@ -235,7 +235,9 @@ julia> rand(rng)
 0.8707612110911583
 ```
 """
-function advance_state!(rng::MRG63k3a, e::Int64, c::Int64)
+function advance_state!(rng::MRG63k3a, e::Integer, c::Integer)
+    e = Int64(e)
+    c = Int64(c)
     if c >= 0
         C1 = PMF63.MatPowModM(PMF63.A1p0, c, PMF63.m1)
         C2 = PMF63.MatPowModM(PMF63.A2p0, c, PMF63.m2)
