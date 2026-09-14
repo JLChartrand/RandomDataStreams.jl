@@ -11,7 +11,9 @@ import Base.rand
 # jump constants, which depend only on the transition.
 # ---------------------------------------------------------------------------
 
-@inline rolt(x::UInt64, k::Int64) = (x << k) | (x >>> (64 - k))
+"Rotate `x` left by `k` bits."
+@inline rolt(x::W, k::Integer) where {W<:Unsigned} =
+    (x << k) | (x >>> (8 * sizeof(W) - k))
 
 # Linear state transitions -----------------------------------------------------
 
@@ -184,12 +186,39 @@ mutable struct LinRNG{N,S} <: AbstractStreamableRNG
     Bg::NTuple{N,UInt64}   # start point of the current substream
     Ig::NTuple{N,UInt64}   # start point of the current stream
 
-    LinRNG{N,S}(x::NTuple{N,UInt64}) where {N,S} = new{N,S}(x, x, x)
-    LinRNG{N,S}(x::NTuple{N,UInt64}, y::NTuple{N,UInt64}, z::NTuple{N,UInt64}) where {N,S} =
-        new{N,S}(x, y, z)
+    function LinRNG{N,S}(x::NTuple{N,UInt64}) where {N,S}
+        checkseed(x) || throw(ArgumentError(_ZERO_STATE))
+        return new{N,S}(x, x, x)
+    end
+    function LinRNG{N,S}(x::NTuple{N,UInt64}, y::NTuple{N,UInt64}, z::NTuple{N,UInt64}) where {N,S}
+        (checkseed(x) && checkseed(y) && checkseed(z)) || throw(ArgumentError(_ZERO_STATE))
+        return new{N,S}(x, y, z)
+    end
 end
 
+const _ZERO_STATE = "the all-zero state is a fixed point of the xoshiro " *
+                    "transition: the generator would output zeros forever"
+
+"""
+    checkseed(s::NTuple{N,UInt64}) -> Bool
+    checkseed(v::AbstractVector{<:Unsigned}) -> Bool
+
+`true` unless the words are all zero. The all-zero state maps to itself under
+every xoshiro/xoroshiro transition, so it is the one state the families forbid;
+there is no other constraint. (The `Vector{Int}` method is MRG32k3a's, whose
+seed space is constrained differently.)
+"""
+checkseed(s::NTuple{N,UInt64}) where {N} = !all(iszero, s)
+checkseed(v::AbstractVector{<:Unsigned}) = !all(iszero, v)
+
 LinRNG{N,S}(v::Vector{<:Unsigned}) where {N,S} = LinRNG{N,S}(NTuple{N,UInt64}(v))
+
+# Uniform constructors: every family accepts no argument (the package default
+# seed, 12345) and a plain integer, expanded through splitmix64 because a
+# xoshiro state must be well mixed and must not be all zero.
+LinRNG{N,S}() where {N,S} = LinRNG{N,S}(12345)
+LinRNG{N,S}(seed::Integer) where {N,S} =
+    LinRNG{N,S}(NTuple{N,UInt64}(_seed_words_nonzero(UInt64(seed), N)))
 LinRNG{N,S}(u::Vector{<:Unsigned}, v::Vector{<:Unsigned}, w::Vector{<:Unsigned}) where {N,S} =
     LinRNG{N,S}(NTuple{N,UInt64}(u), NTuple{N,UInt64}(v), NTuple{N,UInt64}(w))
 
@@ -263,6 +292,7 @@ Seeds a generator with the first words of `seed`.
 """
 function srand!(rng::LinRNG{N}, seed::Vector{UInt64}) where {N}
     s = NTuple{N,UInt64}(seed)
+    checkseed(s) || throw(ArgumentError(_ZERO_STATE))
     rng.Cg = rng.Bg = rng.Ig = s
     return rng
 end
@@ -299,6 +329,19 @@ three-argument constructor.
 """
 get_state(rng::LinRNG) = collect(rng.Cg)
 
+"""
+    set_state!(rng::LinRNG, state) -> rng
+
+Restores the current position from a `get_state(rng)` value. Only the current
+position moves; the stream and substream boundaries (`Bg`, `Ig`) are untouched.
+"""
+function set_state!(rng::LinRNG{N,S}, state) where {N,S}
+    st = NTuple{N,UInt64}(state)
+    checkseed(st) || throw(ArgumentError(_ZERO_STATE))
+    rng.Cg = st
+    return rng
+end
+
 Random.rng_native_52(::LinRNG) = UInt64
 
 rand(rng::LinRNG, ::Random.SamplerType{UInt64}) = next(rng)
@@ -322,6 +365,7 @@ mutable struct LinGen{N,S} <: AbstractRNGStream
 
     function LinGen{N,S}(x::Vector{UInt64}) where {N,S}
         length(x) == N || throw(ArgumentError("seed must have $N UInt64 elements"))
+        checkseed(x) || throw(ArgumentError(_ZERO_STATE))
         new{N,S}(copy(x))
     end
     function LinGen{N,S}(x::Vector{T}) where {N, S, T <: Integer}
@@ -329,9 +373,13 @@ mutable struct LinGen{N,S} <: AbstractRNGStream
         #float are not implemented right now, could be done in the future.
         newx = mod.(x, UInt64)
         length(x) == N || throw(ArgumentError("seed must have $N UInt64 elements"))
+        checkseed(newx) || throw(ArgumentError(_ZERO_STATE))
         new{N,S}(copy(newx))
     end
 end
+
+LinGen{N,S}() where {N,S} = LinGen{N,S}(12345)
+LinGen{N,S}(seed::Integer) where {N,S} = LinGen{N,S}(_seed_words_nonzero(UInt64(seed), N))
 
 function _variant_name(::Type{<:LinRNG{2,:plus}});      "Xoroshiro128plus";   end
 function _variant_name(::Type{<:LinRNG{2,:starstar}});  "Xoroshiro128starstar"; end
@@ -343,12 +391,20 @@ function _variant_name(::Type{<:LinRNG{8,:plus}});      "Xoshiro512plus";     en
 function _variant_name(::Type{<:LinRNG{8,:starstar}});  "Xoshiro512starstar"; end
 function _variant_name(::Type{<:LinRNG{8,:plusplus}});  "Xoshiro512plusplus"; end
 
-function show(io::IO, rng::LinRNG{N,S}) where {N,S}
+# Two-argument `show` is what interpolation, `@show` and container display call,
+# so it stays on one line; the full dump belongs to `text/plain`.
+show(io::IO, rng::LinRNG{N,S}) where {N,S} =
+    print(io, _variant_name(typeof(rng)), "(Cg = ", collect(rng.Cg), ")")
+
+function show(io::IO, ::MIME"text/plain", rng::LinRNG{N,S}) where {N,S}
     print(io, "Full state of ", _variant_name(typeof(rng)), " generator:\n",
           "Cg = $(collect(rng.Cg))\nBg = $(collect(rng.Bg))\nIg = $(collect(rng.Ig))")
 end
 
-function show(io::IO, gen::LinGen{N,S}) where {N,S}
+show(io::IO, gen::LinGen{N,S}) where {N,S} =
+    print(io, _variant_name(LinRNG{N,S}), "Gen(next = ", gen.nextSeed, ")")
+
+function show(io::IO, ::MIME"text/plain", gen::LinGen{N,S}) where {N,S}
     print(io, "Seed for next ", _variant_name(LinRNG{N,S}), " generator:\n$(gen.nextSeed)")
 end
 
@@ -366,6 +422,13 @@ srand!(gen::LinGen{N,S}, seed::Vector{UInt64}) where {N,S} =
 Seed that will be used by the next `next_stream!` call.
 """
 get_state(gen::LinGen) = copy(gen.nextSeed)
+
+"""
+    set_state!(gen::LinGen, seed) -> gen
+
+Restores the seed of the next stream, as returned by `get_state(gen)`.
+"""
+set_state!(gen::LinGen, seed) = srand!(gen, collect(UInt64.(seed)))
 
 """
 Given an RNG generator object, returns the next RNG stream.
@@ -499,6 +562,14 @@ Stream generator minting non-overlapping `Xoshiro256p` streams via a long
 jump (2^192 values) per call. Seeds are 4 `UInt64` words.
 """
 const Xoshiro256plusGen = LinGen{4,:plus}
+
+"""
+    Xoshiro256pGen <: AbstractRNGStream
+
+Regular spelling of [`Xoshiro256plusGen`](@ref), matching `Xoshiro256ssGen`,
+`Xoshiro512pGen` and the rest. The two names are the same type.
+"""
+const Xoshiro256pGen = Xoshiro256plusGen
 
 """
     Xoshiro256ssGen <: AbstractRNGStream

@@ -104,14 +104,36 @@ when each replication itself contains several scenarios.
 
 ## The two object families
 
-1. **Stream generators** (`<: AbstractRNGStream`) hold the seed of the
-   *next* stream to be produced:
-   - `MRG32k3aGen`
-   - `Xoshiro256plusGen`
-2. **RNGs** (`<: AbstractStreamableRNG`) actually produce numbers and can move
-   along streams/substreams:
-   - `MRG32k3a`
-   - `Xoshiro256p`
+Every generator in the package comes as a pair, and the distinction is the one
+the whole interface rests on.
+
+1. **Generator objects** (`<: AbstractRNGStream`) are factories. They hold the
+   seed of the *next* stream and hand out streams with `next_stream!`. They
+   produce no random numbers themselves.
+2. **Streams** (`<: AbstractStreamableRNG`) produce the numbers, and move along
+   the stream and substream hierarchy. They are `AbstractRNG`s, so they work
+   anywhere Julia's own generators do.
+
+| Family | Generator object | Stream |
+|---|---|---|
+| MRG32k3a | `MRG32k3aGen` | `MRG32k3a` |
+| MRG63k3a | `MRG63k3aGen` | `MRG63k3a` |
+| xoroshiro128 | `Xoroshiro128pGen`, `Xoroshiro128ssGen`, `Xoroshiro128ppGen` | `Xoroshiro128p`, `Xoroshiro128ss`, `Xoroshiro128pp` |
+| xoshiro256 | `Xoshiro256pGen`, `Xoshiro256ssGen`, `Xoshiro256ppGen` | `Xoshiro256p`, `Xoshiro256ss`, `Xoshiro256pp` |
+| xoshiro512 | `Xoshiro512pGen`, `Xoshiro512ssGen`, `Xoshiro512ppGen` | `Xoshiro512p`, `Xoshiro512ss`, `Xoshiro512pp` |
+| PCG | `PCG64Gen`, `PCG64DXSMGen` | `PCG64`, `PCG64DXSM` |
+| Philox | `PhiloxGen` (4x32-10), `Philox4x64Gen` | `PhiloxRNG`, `Philox4x64RNG` |
+| Threefry | `Threefry4x32Gen`, `Threefry4x64Gen` | `Threefry4x32RNG`, `Threefry4x64RNG` |
+
+`Xoshiro256plusGen` is an alias of `Xoshiro256pGen`, kept from earlier
+versions.
+
+The interface is the same across the table: whatever the family, a generator
+object answers to `next_stream!`, `srand!`, `get_state` and `set_state!`, and a
+stream answers to `next_substream!`, `reset_substream!`, `reset_stream!`,
+`advance_state!`, `get_state`, `set_state!` and `srand!`. Code written against
+the two abstract types never names a family — see the
+[API reference](api.md).
 
 ## Producing independent streams
 
@@ -126,33 +148,78 @@ worker3 = next_stream!(gen)       # stream 3 — ...
 ```
 
 Each call to `next_stream!` advances the generator's internal seed by a huge
-leap (2^127 values for MRG32k3a, a full `long_jump!` for Xoshiro256+), which is
-what guarantees non-overlap.
+leap (2^127 values for MRG32k3a, 2^250 for MRG63k3a, a full `long_jump!` for
+Xoshiro256+), which is what guarantees non-overlap.
+
+## Threads
+
+Streams share no state, so one stream per thread needs no synchronisation.
+Take the streams first, then parallelise over them:
 
 ```julia
-# Multithreaded simulation: one stream per thread.
-# IMPORTANT: the generator object itself is not thread-safe — never share it;
-# ship each worker its own stream *starting seed* instead.
 using RandomDataStreams, Base.Threads
 
-gen = MRG32k3aGen()
-starts = Vector{Vector{Int}}(undef, nthreads())
-for t in 1:nthreads()
-    starts[t] = copy(get_state(gen))   # seed of stream t
-    next_stream!(gen)                  # advance to the following stream
-end
+gen  = MRG32k3aGen()                    # any generator object
+rngs = next_stream!(gen, nthreads())    # n streams, taken serially
 
 results = Vector{Float64}(undef, nthreads())
 @threads for t in 1:nthreads()
-    s = starts[t]
-    rng = MRG32k3a(s, s, s)            # rebuild stream t on this thread
+    rng = rngs[t]                       # this thread owns this stream
     results[t] = sum(rand(rng) for _ in 1:10^5)
 end
 ```
 
-The same pattern works with Distributed: compute the list of starting seeds on
-the master process and send one entry per worker (`@spawnat` / `remotecall`),
-then rebuild the generator locally with the triple constructor.
+The results are those of the same streams drawn one after another, which the
+test suite checks for every family.
+
+!!! warning "Do not call `next_stream!` inside the parallel loop"
+
+    A generator object holds the seed of the next stream and rewrites it on
+    every call. Concurrent calls read the same seed, so the streams handed out
+    overlap — and nothing reports it. In a measurement here, 64 threads calling
+    `next_stream!` on one shared generator received between 57 and 63 distinct
+    streams instead of 64, on three consecutive runs. The failure is silent and
+    destroys precisely the guarantee this package exists to provide.
+
+    `next_stream!(gen, n)` exists so that the correct pattern is also the
+    shorter one.
+
+## Distributed
+
+Separate processes cannot share stream objects, so the seeds travel instead.
+Take them from the generator before each `next_stream!`, and rebuild the stream
+on the worker with `srand!`:
+
+```julia
+using Distributed
+@everywhere using RandomDataStreams
+
+gen   = MRG32k3aGen()
+seeds = Vector{Any}(undef, nworkers())
+for i in 1:nworkers()
+    seeds[i] = get_state(gen)     # seed of the stream about to be produced
+    next_stream!(gen)             # advance past it
+end
+
+@sync for (i, w) in enumerate(workers())
+    seed = seeds[i]
+    @spawnat w begin
+        rng = MRG32k3a(1)         # any valid seed; replaced on the next line
+        srand!(rng, seed)         # this worker's stream, from its beginning
+        # ... draw from rng ...
+    end
+end
+```
+
+Use `srand!` here, not `set_state!`. They are not interchangeable: `set_state!`
+moves the current position only, leaving the stream and substream boundaries
+where the constructor put them, so a later `reset_stream!` on the worker would
+rewind to the wrong place. `srand!` sets all three checkpoints, which is what
+makes the worker's stream a stream rather than a position in someone else's.
+
+Both are portable across families, as is `get_state` on a generator object; the
+representation that travels is opaque, so hand it back unchanged rather than
+interpreting it.
 
 ## Navigating substreams
 
@@ -191,7 +258,7 @@ state = get_state(rng)     # a copy; safe to store
 # ... consume numbers ...
 ```
 
-To restore an MRG32k3a state, rebuild the generator with the triple
+To restore an MRG32k3a or MRG63k3a state, rebuild the generator with the triple
 constructor (`Cg`, `Bg`, `Ig` all set to the snapshot):
 
 ```julia
@@ -201,7 +268,7 @@ clone = MRG32k3a(snapshot, snapshot, snapshot)
 rand(clone) == xs[1]       # true — resumes exactly after the snapshot
 ```
 
-MRG32k3a additionally supports arbitrary jumps inside a stream:
+Both MRG generators additionally support arbitrary jumps inside a stream:
 
 ```julia
 advance_state!(rng, e, c)
@@ -211,9 +278,102 @@ moves the state forward by `n` steps, where `n = 2^e + c` (`e` may be negative,
 and negative `c` moves backwards). This costs O(log n) matrix operations,
 independent of the distance jumped.
 
+## Scope: host-side streams, device-side bijections
+
+The stream object of L'Ecuyer et al. (2002) is stateful by construction — a
+current position, a substream anchor, a stream anchor, mutated in place. That
+makes it a **host-side** abstraction. A GPU kernel wants the opposite: no state
+at all, one value computed from the thread index. The package does not run on
+a device, and that is a scope boundary rather than a gap, because the two
+halves fit together.
+
+**Counter-based generators: the addressing scheme is the work assignment.** The
+key names the stream, the high half of the counter the substream, the low half
+the position. Any draw can therefore be recomputed from `(key, substream,
+index)` alone, with no object, which is exactly what a kernel needs:
+
+```julia
+using RandomDataStreams
+const RDS = RandomDataStreams
+
+function direct_word(key::NTuple{2,UInt32}, substream::Integer, i::Integer)
+    block, word = divrem(i, 4)                    # four 32-bit words per block
+    ctr = (UInt128(substream) << 64) | UInt128(block)
+    c = (ctr % UInt32, (ctr >> 32) % UInt32, (ctr >> 64) % UInt32, (ctr >> 96) % UInt32)
+    return RDS.philox(c, key)[word + 1]
+end
+```
+
+This agrees with the stream object draw for draw; the test suite checks it, so
+host and device address the same sequence. `philox` and `threefry` are pure,
+allocation-free functions of their arguments, which is the necessary condition
+for using them inside a kernel — necessary, not sufficient: the package has no
+GPU dependency and runs no device tests, so that last step is the user's.
+
+**Recurrence-based generators: the host computes the starting points.** There
+is no stateless form here, and the standard pattern runs the other way: use
+`next_stream!` on the host to produce as many non-overlapping starting states
+as there are tasks, ship one to each, and let each iterate its own recurrence.
+
+```julia
+gen = Xoshiro256plusGen(UInt64[1, 2, 3, 4])
+seeds = [get_state(next_stream!(gen)) for _ in 1:nworkers]    # non-overlapping
+```
+
+The jump machinery is what makes this cheap — matrix jumps for MRG32k3a, GF(2)
+polynomial jumps for the xoshiro families — and it is the construction
+L'Ecuyer et al. (2021, Sec. 2) describe for parallel environments.
+
+What the package does not provide: filling a `CuArray`, or any device-side
+`rand`. If that is what you need, take the bijections and the addressing scheme
+above, and keep the stream objects on the host for what they are good at —
+assigning non-overlapping work and replaying it identically.
+
+## One interface, every generator
+
+The whole point of the two object families is that code written against them
+does not name a generator. Every family in the package answers to the same
+calls, with the same meanings — the table below is asserted for all seventeen
+generators in the test suite, not just documented.
+
+On the generator object:
+
+| call | meaning |
+|---|---|
+| `Gen()` | seeded with the package default, `12345` |
+| `Gen(12345)` | seeded with an integer |
+| `Gen(v)` | seeded with the family's own seed vector |
+| `next_stream!(gen)` | the next non-overlapping stream |
+| `srand!(gen, seed)` | reset the seed the next `next_stream!` will use |
+| `get_state(gen)`, `set_state!(gen, s)` | save and restore it |
+
+On the stream:
+
+| call | meaning |
+|---|---|
+| `T()`, `T(12345)`, `T(v)` | the same three seeding forms |
+| `next_substream!`, `reset_substream!`, `reset_stream!` | navigation; each returns the generator |
+| `advance_state!(rng, e, c)` | move by `2^e + c` draws, negative allowed |
+| `get_state`, `set_state!` | save and restore the position only |
+| `srand!`, `Random.seed!` | reseed, resetting both boundaries |
+| `copy`, `show`, the full `Random` API | as for any `AbstractRNG` |
+
+**The seeding rule.** A value in the family's own representation — its seed
+vector, or a `UInt128` for PCG — *is* the state or key. Any other integer is a
+*seed*, expanded through splitmix64 and folded into whatever the family
+accepts. So `MRG32k3aGen(12345)`, `Xoshiro256ppGen(12345)`, `PhiloxGen(12345)`
+and `PCG64Gen(12345)` all mean the same kind of thing, and `T(12345)` is
+equivalent to `Random.seed!(T(), 12345)` everywhere.
+
+**What is not portable.** `short_jump!` and `long_jump!` are the xoshiro and
+PCG spelling of a jump by exactly the substream and stream distance. Use
+`next_substream!` in code meant to work with any generator. `long_jump!` has no
+meaning at all for a counter-based generator, where moving to another stream
+means taking another key — an operation that belongs to the generator object.
+
 ## Guarantees
 
 - Streams produced by successive calls to `next_stream!` on the same generator
   object are **provably non-overlapping**.
 - Substreams likewise partition a stream into disjoint blocks
-  (length ≈ 2^76 steps for MRG32k3a).
+  (length ≈ 2^76 steps for MRG32k3a, 2^150 for MRG63k3a).

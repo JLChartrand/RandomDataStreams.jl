@@ -9,6 +9,17 @@ const a12 = Int64(1403580)
 const a13 = Int64(-810728)
 const a21 = Int64(527612)
 const a23 = Int64(-1370589)
+
+# Vigna's testless formulation of the same recurrence
+# (https://github.com/vigna/MRG32k3a): the two negative coefficients are
+# carried as positive numbers and subtracted, and a multiple of the modulus is
+# added so the argument of `%` can never be negative. The residual then needs
+# no correction. Both sums stay far below typemax(Int64): the largest is
+# a12*(m1-1) + corr1 < 9.6e15.
+const a13n = Int64(810728)
+const a23n = Int64(1370589)
+const corr1 = m1 * a13n
+const corr2 = m2 * a23n
 const norm = Float64(1.0 / (1 + m1))
 const two17 = Int64(131072)
 const two53 = Int64(9007199254740992)

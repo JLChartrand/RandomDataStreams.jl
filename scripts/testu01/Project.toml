@@ -1,0 +1,4 @@
+[deps]
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+RandomDataStreams = "dc077566-edc2-11e8-0ce0-7d758bb9a5d1"
+TestU01_jll = "1f073b57-2743-565b-a723-478df9911235"

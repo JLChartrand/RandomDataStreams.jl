@@ -1,3 +1,8 @@
 docs/build/
 docs/Manifest.toml
 Manifest.toml
+testu01-results/
+
+# Planning and editorial notes now live in the private companion repository
+# fbastin/randomdatastreams-papers; the JOSS paper itself is on the unmerged
+# 'paper' branch of this repository, as JOSS requires.

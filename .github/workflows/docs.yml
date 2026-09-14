@@ -4,6 +4,11 @@ on:
   push:
     branches: [master]
     tags: ['*']
+  # Build on pull requests too. `deploydocs` detects the pull-request context and
+  # skips deployment by itself, so this costs nothing and closes a real gap: the
+  # doc build used to be verified only after merging, which is exactly when a
+  # `checkdocs` failure is most expensive to discover.
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -16,6 +21,7 @@ concurrency:
 
 jobs:
   build-and-deploy:
+    name: HTML
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,3 +39,53 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
         run: julia --project=docs docs/make.jl
+
+  # The PDF is built only on tags. It needs a TeX Live installation and Pygments
+  # (the manual sets its code listings with minted, which is why the LaTeX build
+  # wants shell-escape), so it takes minutes rather than seconds -- affordable
+  # once per release, not once per commit. The committed
+  # docs/RandomDataStreams.pdf stays browsable in the repository; this job is
+  # what guarantees the LaTeX build still works at the moment it matters, and
+  # produces the canonical copy for the release.
+  pdf:
+    name: PDF
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - name: Install TeX Live and Pygments
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            texlive-luatex texlive-latex-extra texlive-fonts-recommended \
+            latexmk python3-pygments
+      - name: Instantiate docs environment
+        run: |
+          julia --project=docs -e '
+            using Pkg
+            Pkg.develop(PackageSpec(path = pwd()))
+            Pkg.instantiate()'
+      - name: Build the PDF
+        run: julia --project=docs docs/make.jl pdf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RandomDataStreams-manual
+          path: docs/RandomDataStreams.pdf
+          if-no-files-found: error
+      # TagBot creates the release from the registered tag, which may not exist
+      # yet when this runs. Attaching is therefore best-effort: the artifact
+      # above is the guaranteed copy.
+      - name: Attach to the release, if there is one
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" docs/RandomDataStreams.pdf --clobber
+          else
+            echo "No release for $tag yet; the manual is available as a workflow artifact."
+          fi

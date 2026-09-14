@@ -22,12 +22,15 @@ Requirements: Julia ≥ 1.6. The only dependency is the standard library `Random
 
 ## Choosing a generator
 
-RandomDataStreams.jl implements the full xoshiro/xoroshiro family of Blackman & Vigna plus
-L'Ecuyer's MRG32k3a. All variants of a xoshiro family share the same linear
+RandomDataStreams.jl implements the full xoshiro/xoroshiro family of Blackman & Vigna, L'Ecuyer's MRG32k3a and MRG63k3a, O'Neill's PCG (the default bit generator of NumPy), and the Philox and Threefry CBRNGs. All variants of a xoshiro family share the same linear
 transition and jump constants; only the output scrambler differs.
 
 | Type | Family | State | Period | Scrambler |
 |---|---|---|---|---|
+| `PhiloxRNG` | Philox4x32-10 | 128-bit counter | 2^130 | Feistel-like network |
+| `Philox4x64RNG` | Philox4x64-10 | 128-bit counter | 2^130 | Feistel-like network |
+| `Threefry4x64RNG` | Threefry4x64-20 | 128-bit counter | 2^130 | Threefish rounds (add/rot/xor) |
+| `Threefry4x32RNG` | Threefry4x32-20 | 128-bit counter | 2^130 | Threefish rounds (add/rot/xor) |
 | `Xoroshiro128p` | xoroshiro128 | 128 bits | 2^128 − 1 | `s0 + s1` |
 | `Xoroshiro128ss` | xoroshiro128 | 128 bits | 2^128 − 1 | high bits, `**` |
 | `Xoroshiro128pp` | xoroshiro128 | 128 bits | 2^128 − 1 | high bits, `++` |
@@ -37,9 +40,37 @@ transition and jump constants; only the output scrambler differs.
 | `Xoshiro512p` | xoshiro512 | 512 bits | 2^512 − 1 | `s0 + s2` |
 | `Xoshiro512ss` | xoshiro512 | 512 bits | 2^512 − 1 | high bits, `**` |
 | `Xoshiro512pp` | xoshiro512 | 512 bits | 2^512 − 1 | high bits, `++` |
-| `MRG32k3a` | combined MRG (L'Ecuyer) | 192 bits | ≈ 2^191 | native `Float64` |
+| `MRG32k3a` | combined MRG (L'Ecuyer) | 192 bits | ≈ 2^191 | native `Float64`, 32-bit step |
+| `MRG63k3a` | combined MRG (L'Ecuyer) | 384 bits | ≈ 2^377 | native `Float64`, 63-bit step |
+| `PCG64` | PCG (O'Neill) | 128 bits | 2^128 | XSL-RR permutation |
+| `PCG64DXSM` | PCG (O'Neill) | 128 bits | 2^128 | DXSM permutation |
 
 See [Generator Comparison](comparison.md) for guidance and benchmarks.
+
+## Seeding: one rule for every generator
+
+Whatever generator you pick, there are three ways to seed it, and they mean the
+same thing in every family:
+
+```julia
+MRG32k3aGen()             # the package default seed, 12345
+MRG32k3aGen(20260830)     # an integer seed
+MRG32k3aGen([1,2,3,4,5,6])# the family's own seed vector
+
+Xoshiro256ppGen(20260830) # exactly the same three forms
+PCG64Gen(20260830)
+PhiloxGen(20260830)
+```
+
+An **integer** is a *seed*: it is expanded through splitmix64 and folded into
+whatever the family accepts, so `T(20260830)` is equivalent to
+`Random.seed!(T(), 20260830)` everywhere. A value in the family's **own
+representation** — its seed vector, or a `UInt128` for PCG — is taken as the
+state or key itself, not hashed.
+
+The same three forms work on the stream types directly (`MRG32k3a(20260830)`,
+`Xoshiro256pp(20260830)`, ...). See
+[Streams & Substreams](streams.md) for the full interface table.
 
 ## First numbers
 
@@ -66,15 +97,15 @@ rand(x)               # Float64 in [0, 1)
 - `Bool`
 - Ranges: `rand(rng, 1:10)` works through the standard `Random` machinery
 
-Note: integer outputs of MRG32k3a are built from its native ~31-bit resolution;
-they are not uniform over their full width. Use them for indices, choices and
+Note: integer outputs of MRG32k3a are built from its native ~32-bit resolution,
+and MRG63k3a's from its ~63-bit one; they are not uniform over their full width. Use them for indices, choices and
 flags rather than cryptography.
 
 ### Xoshiro256p
 
 - `Float64` (native path), `Float32`, `Float16`
 - `UInt64`
-- Ranges: `rand(rng, r::UnitRange{Int64})`
+- Ranges: `rand(rng, 1:10)` works through the standard `Random` machinery
 
 ## Reproducibility
 
@@ -85,8 +116,8 @@ rng = MRG32k3a([42, 1, 2, 3, 4, 5])
 x    = Xoshiro256p(UInt64[0xdead, 0xbeef, 0xcafe, 0xbabe])
 ```
 
-Seeds are validated by `checkseed`: a valid MRG32k3a seed has 6 non-negative
-values; the first three must be < m1 and not all zero, the last three < m2 and
+Seeds are validated by `checkseed`, or `checkseed63` for MRG63k3a: a valid seed
+of either has 6 non-negative values; the first three must be < m1 and not all zero, the last three < m2 and
 not all zero.
 
 The standard Julia interface also works with every generator:

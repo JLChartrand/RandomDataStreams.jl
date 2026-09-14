@@ -8,16 +8,11 @@ Generates a `Float16` from any xoshiro/xoroshiro generator.
 """
 rand(rng::LinRNG, ::Type{Float16}) = Float16(rand(rng))
 
-"""
-Generates an `Int64` uniformly distributed in the given range.
-"""
-function rand(rng::LinRNG, r::UnitRange{Int64})
-    n = UInt64(length(r))
-    return r.start + reinterpret(Int64, rand(rng, UInt64) % n)
-end
-
 # Full Random-API coverage for integer and character types, mirroring the
-# derivation used by the standard library's Xoshiro.
+# derivation used by the standard library's Xoshiro. Ranges are left to
+# `Random`: the sampler it builds from these methods rejects instead of folding
+# with `%`, so it is unbiased and it raises the same `ArgumentError` as every
+# other generator on an empty range.
 
 rand(rng::LinRNG, ::Random.SamplerType{Bool}) = (next(rng) >> 63) == 1
 

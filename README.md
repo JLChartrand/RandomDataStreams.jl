@@ -12,21 +12,33 @@ RandomDataStreams (Random Data Streams) provides random number generators (RNGs)
 This is a key requirement for stochastic simulation, parallel Monte Carlo, and
 reproducible variance-reduction techniques such as common random numbers.
 
-Two generator families are provided:
+Four generator families are provided, the first of them in two sizes:
 
 | Family | Variants | Period | Native output | Streams / substreams |
 |-------------|---------------|------|----------------------|----------------|
-| **MRG32k3a** | `MRG32k3a` | ≈ 2^191 | `Float64` | matrix jumps (L'Ecuyer) |
+| **MRG32k3a** | `MRG32k3a` | ≈ 2^191 | `Float64` (32-bit step) | matrix jumps (L'Ecuyer) |
+| **MRG63k3a** | `MRG63k3a` | ≈ 2^377 | `Float64` (63-bit step) | matrix jumps, 2^250 / 2^150 |
 | **xoshiro/xoroshiro** | `Xoroshiro128p/ss/pp`, `Xoshiro256p/ss/pp`, `Xoshiro512p/ss/pp` | 2^128 – 2^512 | `UInt64` | Vigna's jump polynomials |
+| **PCG** | `PCG64`, `PCG64DXSM` | 2^128 | `UInt64` | closed-form LCG jumps (O'Neill) |
+| **Philox** | `PhiloxRNG` (4x32-10), `Philox4x64RNG` (4x64-10) | 2^130 | `UInt32` / `UInt64` | distinct keys / counter jumps (Salmon et al.) |
+| **Threefry** | `Threefry4x64RNG` (4x64-20), `Threefry4x32RNG` (4x32-20) | 2^130 | `UInt64` / `UInt32` | distinct keys / counter jumps (Salmon et al.) |
 
 All xoshiro/xoroshiro variants are validated byte-for-byte against the
-original C implementations from [xoshiro.di.unimi.it](http://xoshiro.di.unimi.it).
-See the [documentation](docs/) for a detailed comparison with MRG32k3a.
+original C implementations from [xoshiro.di.unimi.it](http://xoshiro.di.unimi.it),
+Philox and Threefry against the test vectors of Salmon et al. (2011), and both
+PCG variants against NumPy, whose `default_rng()` is PCG64.
+See the [documentation](docs/) for a detailed comparison.
+
+Note that PCG's own increment-based "streams" are deliberately not exposed:
+they are not known to be independent, and streams here come from the
+closed-form LCG jump instead. The [FAQ](docs/src/faq.md) explains why.
 
 ## Features
 
 - **Multiple independent streams**: obtain guaranteed non-overlapping sequences
   with `next_stream!(gen)` — ideal for parallel workers or replicated experiments.
+- **Ready for threads**: `next_stream!(gen, n)` hands out `n` streams at once;
+  streams share no state, so one per thread needs no synchronisation.
 - **Substreams** within each stream (`reset_substream!`, `next_substream!`),
   enabling common random numbers across scenarios — for *every* generator.
 - **Full state control**: save/restore a generator with `get_state`,
@@ -64,6 +76,52 @@ rand(rng, Int32)
 rand(rng, 1:10)              # random number in 1:10
 ```
 
+### MRG63k3a
+
+Same generator family in 64-bit arithmetic: L'Ecuyer's (1999) two moduli just
+under 2^63 instead of 2^32, period ≈ 2^377, and just under 63 random bits per
+step instead of 32. Use it when the draws are integers — a `UInt64` costs two
+steps here against four for MRG32k3a — or when a longer period matters. The
+interface is the same, and so is the seed vector.
+
+```julia
+using RandomDataStreams
+
+gen = MRG63k3aGen()          # streams 2^250 apart, substreams 2^150
+rng = next_stream!(gen)
+
+rand(rng)                    # Float64 in (0, 1)
+rand(rng, UInt64)            # two steps, two 32-bit chunks
+```
+
+### Philox
+
+```julia
+using RandomDataStreams
+
+gen = PhiloxGen()            # Philox4x32-10
+rng = next_stream!(gen)
+
+rand(rng)                    # Float64 in [0, 1)
+rand(rng, UInt32)            # one 32-bit word of the current block
+rand(rng, UInt64)            # raw 64-bit unsigned integer
+
+gen64 = Philox4x64Gen()      # Philox4x64-10: 64-bit words, no bit assembly
+rand(next_stream!(gen64), UInt64)
+```
+
+### Threefry
+
+```julia
+using RandomDataStreams
+
+gen = Threefry4x64Gen()      # Threefry4x64-20, recommended on CPUs
+rng = next_stream!(gen)
+
+rand(rng)                    # Float64 in [0, 1)
+rand(rng, UInt64)            # raw 64-bit unsigned integer
+```
+
 ### Xoshiro256+
 
 ```julia
@@ -90,6 +148,27 @@ reset_substream!(rng1)       # back to the start of the current substream
 reset_stream!(rng1)          # back to the very beginning of the stream
 @assert rand(rng1) == u0
 ```
+
+### One stream per thread
+
+```julia
+using RandomDataStreams, Base.Threads
+
+gen  = MRG32k3aGen()
+rngs = next_stream!(gen, nthreads())   # take the streams serially, first
+
+totals = Vector{Float64}(undef, nthreads())
+@threads for t in 1:nthreads()
+    rng = rngs[t]                      # each thread owns one stream
+    totals[t] = sum(rand(rng) for _ in 1:10^4)
+end
+```
+
+Streams share no state, so this needs no synchronisation and gives exactly what
+the same streams give drawn one after another. Do **not** call `next_stream!`
+on a shared generator object inside the loop: the generator rewrites the seed
+of the next stream on every call, and concurrent calls hand out overlapping
+streams without reporting it.
 
 ### Drop-in use with Julia's standard RNG API
 
@@ -128,20 +207,44 @@ advance_state!(rng, 10, -3)  # jumps n = 2^10 - 3 = 1021 steps forward
 ## Documentation
 
 Full documentation lives in [`docs/`](docs/) and as a PDF in
-[`docs/RandomDataStreams.pdf`](docs/RandomDataStreams.pdf):
+[`docs/RandomDataStreams.pdf`](docs/RandomDataStreams.pdf), regenerated with
+`julia --project=docs docs/make.jl pdf`:
 
 - [Getting started](docs/src/getting_started.md)
 - [Streams & substreams](docs/src/streams.md)
 - [API reference](docs/src/api.md)
 - [Implementation notes](docs/src/implementation.md)
+- [Validation](docs/src/validation.md)
+- [Generator comparison](docs/src/comparison.md)
+
+A runnable tour — the stream model, every generator the package ships, and a
+common random numbers experiment — is in
+[`notebooks/streams_tour.ipynb`](notebooks/streams_tour.ipynb).
 
 ## References
 
-- P. L'Ecuyer, R. Simard, E. J. Chen, W. D. Kelton (2002).
-  *An Object-Oriented Random-Number Package with Many Long Streams and
-  Substreams*. Operations Research 50(6), 1073–1075.
-- Blackman, D., Vigna, S. (2019). *Scrambled Linear Pseudorandom Number
-  Generators* (xoshiro256+).
+### MRG32k3a, MRG63k3a & Stream API
+- L'Ecuyer, P. (1999). *Good Parameters and Implementations for Combined Multiple Recursive Random Number Generators*. Operations Research, 47(1), 159–164. (MRG32k3a is the third entry of its Table II, MRG63k3a the fourth.)
+- L'Ecuyer, P., Simard, R., Chen, E. J., & Kelton, W. D. (2002). *An Object-Oriented Random-Number Package with Many Long Streams and Substreams*. Operations Research, 50(6), 1073–1075.
+
+### Multiple streams in parallel environments
+- L'Ecuyer, P., Nadeau-Chamard, O., Chen, Y.-F., & Lebar, J. (2021). *Multiple Streams with Recurrence-Based, Counter-Based, and Splittable Random Number Generators*. Proceedings of the 2021 Winter Simulation Conference (WSC).
+
+### xoshiro / xoroshiro
+- Blackman, D., & Vigna, S. (2021). *Scrambled Linear Pseudorandom Number Generators*. ACM Transactions on Mathematical Software, 47(4), 1-32.
+
+### Philox & Threefry
+- Salmon, J. K., Moraes, M. A., Dror, R. O., & Shaw, D. E. (2011). *Parallel random numbers: as easy as 1, 2, 3*. SC '11: Proceedings of 2011 International Conference for High Performance Computing, Networking, Storage and Analysis.
+
+## Contributing and support
+
+Questions, bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
+says how to report a problem, how to run the batteries and benchmarks, and what
+a change has to satisfy — in particular the stream contract every generator
+obeys and the external reference values a new generator needs. Participation is
+governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Changes between releases are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

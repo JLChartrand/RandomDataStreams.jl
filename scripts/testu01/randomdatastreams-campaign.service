@@ -1,0 +1,69 @@
+# systemd *user* unit for a validation campaign that outlives the SSH session.
+#
+# `nohup` survives a logout; `tmux` survives a logout and lets you reattach;
+# neither survives a reboot, and neither restarts a driver that died. A BigCrush
+# sweep runs for days or weeks, so it wants a supervisor.
+#
+# This unit is the best of the supervisors, but it needs `enable-linger`,
+# which on a shared machine only an administrator can grant. Where that is
+# refused, `scripts/run-campaign.sh --supervisor=tmux --watchdog` gets back
+# logout-, reboot- and crash-survival through a user crontab entry instead. See
+# docs/src/validation.md.
+#
+# Install (once, on the machine that will run it):
+#
+#     loginctl enable-linger $USER            # keep user services after logout
+#     mkdir -p ~/.config/systemd/user
+#     cp randomdatastreams-campaign.service ~/.config/systemd/user/
+#     $EDITOR ~/.config/systemd/user/randomdatastreams-campaign.service   # paths
+#     systemctl --user daemon-reload
+#
+# Run:
+#
+#     systemctl --user start  randomdatastreams-campaign
+#     systemctl --user status randomdatastreams-campaign
+#     journalctl --user -u randomdatastreams-campaign -f
+#
+# Stop, keeping the jobs that are already running:
+#
+#     touch <out>/STOP          # the driver finishes what is in flight, then exits
+#
+# Stop now, losing only the jobs in flight (everything finished is recorded):
+#
+#     systemctl --user stop randomdatastreams-campaign
+#
+# Resume, at any time, after anything: start it again. The driver reads
+# summary.tsv and does only what is missing.
+
+[Unit]
+Description=RandomDataStreams.jl TestU01 validation campaign
+After=network.target
+
+[Service]
+Type=simple
+
+# --- edit these three ---------------------------------------------------------
+WorkingDirectory=%h/Git/RandomDataStreams.jl
+Environment=CAMPAIGN_OUT=%h/testu01-results
+ExecStart=/usr/bin/env julia --startup-file=no scripts/testu01/campaign.jl \
+          --battery=bigcrush --jobs=6 --out=%h/testu01-results
+# ------------------------------------------------------------------------------
+
+# A battery is CPU-bound for hours. Keep it out of the way of interactive work
+# and of any timing benchmark that might run on the same machine.
+Nice=10
+IOSchedulingClass=idle
+
+# On stop, signal the driver only: it stops scheduling and waits for its
+# children, which is what makes an interrupted campaign cheap.
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=6h
+
+# If the driver dies for any reason other than a clean exit, bring it back; it
+# resumes from summary.tsv.
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target
