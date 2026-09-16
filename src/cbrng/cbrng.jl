@@ -247,9 +247,23 @@ function _fill_u64!(f::F, rng::CBRNG{B,UInt32,N,K}, A::AbstractArray) where {F,B
 end
 
 # The conversion the scalar Float64 path applies to a raw 64-bit output; kept
-# identical so that `rand!` and repeated `rand` agree bit for bit.
-@inline _close_open01(u::UInt64) =
+# identical so that `rand!` and repeated `rand` agree bit for bit. Exposed
+# (dropped the underscore) because a GPU kernel needs the same conversion and
+# lives outside this module's private namespace; see philox/philox.jl.
+"""
+    close_open01(u::UInt64) -> Float64
+    close_open01(u::UInt32) -> Float32
+
+Map a raw generator word to a uniform value in `[0, 1)`, taking its low
+mantissa bits directly. This is the exact conversion the scalar `rand(rng)`
+path uses, exposed so any caller producing raw Philox/CBRNG words -- a GPU
+kernel included -- can match it bit for bit.
+"""
+@inline close_open01(u::UInt64) =
     reinterpret(Float64, 0x3ff0000000000000 | (u & 0x000fffffffffffff)) - 1.0
+
+@inline close_open01(u::UInt32) =
+    reinterpret(Float32, 0x3f800000 | (u & 0x007fffff)) - 1.0f0
 
 Random.rand!(rng::CBRNG{B,W,N,K}, A::Array{W}, ::Random.SamplerType{W}) where {B,W,N,K} =
     _fill_words!(rng, A)
@@ -259,7 +273,7 @@ Random.rand!(rng::CBRNG{B,UInt32,N,K}, A::Array{UInt64}, ::Random.SamplerType{UI
 
 Random.rand!(rng::CBRNG, A::Array{Float64},
              ::Random.SamplerTrivial{Random.CloseOpen01{Float64}}) =
-    _fill_u64!(_close_open01, rng, A)
+    _fill_u64!(close_open01, rng, A)
 
 # Streams and substreams -------------------------------------------------------
 # A stream is a key; a substream is a slice of the counter space of that key.

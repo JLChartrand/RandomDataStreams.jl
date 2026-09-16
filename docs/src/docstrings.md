@@ -62,6 +62,14 @@ Xoshiro512ppGen
 RandomDataStreams.CBGen
 ```
 
+### GPU primitives (Philox4x32-10)
+
+```@docs
+philox4x32_10
+philox4x32_counter
+close_open01
+```
+
 ### Functions
 
 ```@docs

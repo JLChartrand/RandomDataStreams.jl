@@ -1,0 +1,105 @@
+# GPU tests for the Philox4x32-10 CUDA extension (ext/RandomDataStreamsCUDAExt.jl).
+#
+# Not part of `Pkg.test()`: CUDA.jl pulls in real GPU driver/toolkit artifacts,
+# a cost every contributor running the plain test suite would otherwise pay
+# for a capability most of them cannot exercise. Run this file directly, on a
+# machine with an NVIDIA GPU:
+#
+#   julia --project -e 'using Pkg; Pkg.add("CUDA"); include("test/test_cuda.jl")'
+#
+# On any other machine it loads, finds no functional device, and reports that
+# it skipped rather than silently passing nothing.
+
+using RandomDataStreams
+using Random
+using Test
+using CUDA
+
+if !CUDA.functional()
+    @info "CUDA is not functional on this machine -- skipping GPU tests" CUDA.functional()
+else
+
+@testset "PhiloxRNG CUDA fill" begin
+    key = (UInt32(11), UInt32(22))
+
+    @testset "matches the CPU path bit for bit" begin
+        for n in (1, 2, 3, 100, 10_001)          # 1 and odd n exercise the tail pairing
+            cpu = PhiloxRNG(key)
+            cpu_out = Vector{Float64}(undef, n)
+            rand!(cpu, cpu_out)
+
+            gpu = PhiloxRNG(key)
+            gpu_out = CUDA.zeros(Float64, n)
+            rand!(gpu, gpu_out)
+
+            @test Array(gpu_out) == cpu_out
+            # both paths must advance the counter by the same number of blocks
+            @test get_state(gpu)[1] == get_state(cpu)[1]
+        end
+    end
+
+    @testset "values land in [0, 1)" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 50_000)
+        rand!(rng, out)
+        v = Array(out)
+        @test all(0.0 .<= v .< 1.0)
+        @test 0.48 < sum(v) / length(v) < 0.52
+    end
+
+    @testset "continues from where the GPU fill left off" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 20)
+        rand!(rng, out)
+        after_gpu = rand(rng)                     # next scalar draw, on the CPU
+
+        ref = PhiloxRNG(key)
+        ref_out = Vector{Float64}(undef, 20)
+        rand!(ref, ref_out)
+        after_cpu = rand(ref)
+        @test after_gpu == after_cpu
+    end
+
+    @testset "refuses a mid-block generator" begin
+        rng = PhiloxRNG(key)
+        rand(rng)                                 # one scalar draw -> mid-block
+        out = CUDA.zeros(Float64, 10)
+        @test_throws ArgumentError rand!(rng, out)
+
+        reset_substream!(rng)                     # realigned -> works again
+        @test rand!(rng, out) === out
+    end
+
+    @testset "empty array is a no-op" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 0)
+        rand!(rng, out)
+        @test get_state(rng)[1] == 0
+    end
+end
+
+@testset "philox4x32_10 / philox4x32_counter as a per-thread kernel primitive" begin
+    # A minimal user kernel: thread i draws one Philox4x32 block from counter
+    # (i, 0) under a fixed key, with no stream object and no shared state --
+    # exactly the pattern advanced Monte Carlo kernels use these functions for.
+    function _kernel!(out, key)
+        i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+        if i <= length(out)
+            ctr = philox4x32_counter(UInt64(i - 1), UInt64(0))
+            blk = philox4x32_10(ctr, key)
+            @inbounds out[i] = blk[1]
+        end
+        return nothing
+    end
+
+    key = (UInt32(5), UInt32(9))
+    n = 1000
+    out = CUDA.zeros(UInt32, n)
+    @cuda threads = 256 blocks = cld(n, 256) _kernel!(out, key)
+
+    expected = [RandomDataStreams.philox(philox4x32_counter(UInt64(i - 1), UInt64(0)), key, Val(10))[1]
+                for i in 1:n]
+    @test Array(out) == expected
+end
+
+end # CUDA.functional()

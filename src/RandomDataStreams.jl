@@ -54,5 +54,6 @@ export PCG64, PCG64DXSM, PCG64Gen, PCG64DXSMGen
 export CBRNG, CBGen
 export PhiloxRNG, PhiloxGen
 export Philox4x64RNG, Philox4x64Gen
+export philox4x32_10, philox4x32_counter, close_open01
 export Threefry4x64RNG, Threefry4x64Gen, Threefry4x32RNG, Threefry4x32Gen
 end # module
