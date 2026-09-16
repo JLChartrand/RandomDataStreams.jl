@@ -36,6 +36,10 @@
 # and CUDA math libraries don't promise identical rounding; for `randn!` they
 # are expected to differ outright -- Box-Muller on the GPU, Ziggurat on the
 # CPU, deliberately different algorithms (see ext/RandomDataStreamsCUDAExt.jl).
+#
+# Pass a path as the first argument to also write the table as a CSV
+# (columns: commit,N,case,cpu_ms,gpu_ms,speedup). Plain
+# `julia gpu_throughput.jl`, with no argument, prints only.
 
 include(joinpath(@__DIR__, "..", "env.jl"))
 ensure_checkout_env(@__DIR__)
@@ -45,8 +49,9 @@ using RandomDataStreams, Random, CUDA, BenchmarkTools, Printf
 assert_checkout(RandomDataStreams, @__DIR__)
 
 include(joinpath(@__DIR__, "..", "provenance.jl"))
+include(joinpath(@__DIR__, "csv_util.jl"))
 
-function run_case(N::Int)
+function run_case(N::Int, rows)
     println("N = $N draws, fill + reduce (BenchmarkTools minimum)\n")
     @printf("%-24s %12s %12s %10s\n", "case", "CPU (ms)", "GPU (ms)", "speedup")
 
@@ -67,16 +72,21 @@ function run_case(N::Int)
          () -> (randn!(gpu, gbuf); sum(gbuf))),
     ]
 
+    commit = provenance().commit
     for (name, cpu_f, gpu_f) in cases
         cpu_f(); gpu_f()                              # compile / warm up, untimed
         tc = minimum(@benchmark $cpu_f()).time / 1e6  # ns -> ms
         tg = minimum(@benchmark $gpu_f()).time / 1e6
         @printf("%-24s %12.3f %12.3f %10.2fx\n", name, tc, tg, tc / tg)
+        push!(rows, (commit, string(N), name, string(tc), string(tg), string(tc / tg)))
     end
     println()
 end
 
 function main()
+    csv_path = isempty(ARGS) ? nothing : ARGS[1]
+    rows = Tuple{String,String,String,String,String,String}[]
+
     println("RandomDataStreams GPU throughput")
     println("Julia ", VERSION, ", ", Sys.CPU_NAME, ", ", Sys.MACHINE)
     println(provenance_line())
@@ -89,7 +99,12 @@ function main()
     println("GPU: ", CUDA.name(CUDA.device()))
     println(repeat("-", 78), "\n")
 
-    run_case(100_000)
+    run_case(100_000, rows)
+
+    if csv_path !== nothing
+        write_csv(csv_path, ["commit", "N", "case", "cpu_ms", "gpu_ms", "speedup"], rows)
+        println("Wrote ", csv_path)
+    end
 end
 
 main()

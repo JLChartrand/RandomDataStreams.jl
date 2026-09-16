@@ -34,6 +34,13 @@
 # and say in the write-up which core type was used. A faster hybrid chip gives
 # *less* trustworthy numbers than a uniform one unless this is done.
 
+# Pass a path as the first argument to also write the numbers below as a long
+# -format CSV (columns: commit,section,name,metric,value), one row per number
+# printed. Plain `julia throughput.jl`, with no argument, prints only, exactly
+# as before.
+#
+#     julia -O3 scripts/benchmarks/throughput.jl results/throughput.csv
+
 include(joinpath(@__DIR__, "..", "env.jl"))
 ensure_checkout_env(@__DIR__)
 
@@ -42,6 +49,7 @@ using RandomDataStreams, Random, BenchmarkTools, Printf
 assert_checkout(RandomDataStreams, @__DIR__)
 
 include(joinpath(@__DIR__, "..", "provenance.jl"))
+include(joinpath(@__DIR__, "csv_util.jl"))
 const RDS = RandomDataStreams
 
 const N_SCALAR = 100_000        # draws per benchmark sample
@@ -89,6 +97,12 @@ function block_loop(f, ctr::NTuple{4,W}, key, n) where {W}
 end
 
 function main()
+    csv_path = isempty(ARGS) ? nothing : ARGS[1]
+    rows = Tuple{String,String,String,String,String}[]
+    commit = provenance().commit
+    record!(section, name, metric, value) =
+        push!(rows, (commit, section, name, metric, string(value)))
+
     println("RandomDataStreams throughput")
     println("Julia ", VERSION, ", ", Sys.CPU_NAME, ", ", Sys.MACHINE)
     println(provenance_line())
@@ -126,6 +140,9 @@ function main()
         u32 = mdraws(@benchmark(xor_loop($rng, UInt32, $N_SCALAR)), N_SCALAR)
         @printf("%-18s %9.0f %6.2f %9.0f %6.2f %9.0f %6.2f\n", name,
                 f, 1000 / f, u64, 1000 / u64, u32, 1000 / u32)
+        record!("scalar", name, "Float64_Mdraws_per_s", f)
+        record!("scalar", name, "UInt64_Mdraws_per_s", u64)
+        record!("scalar", name, "UInt32_Mdraws_per_s", u32)
     end
 
     println("\nArray fill with rand!, millions of elements per second:\n")
@@ -139,6 +156,9 @@ function main()
         u64 = mdraws(@benchmark(rand!($rng, $v64)), N_BULK)
         u32 = mdraws(@benchmark(rand!($rng, $v32)), N_BULK)
         @printf("%-18s %12.0f %12.0f %12.0f\n", name, f, u64, u32)
+        record!("bulk", name, "Float64_Mdraws_per_s", f)
+        record!("bulk", name, "UInt64_Mdraws_per_s", u64)
+        record!("bulk", name, "UInt32_Mdraws_per_s", u32)
     end
 
     println("\nRaw bijection rate, millions of 4-word blocks per second:\n")
@@ -153,7 +173,9 @@ function main()
     for (name, f, ctr, key) in bijections
         n = 10_000
         b = @benchmark block_loop($f, $ctr, $key, $n)
-        @printf("%-18s %12.1f\n", name, mdraws(b, n))
+        rate = mdraws(b, n)
+        @printf("%-18s %12.1f\n", name, rate)
+        record!("bijection", name, "Mblocks_per_s", rate)
     end
 
     println("\nFor reference, the idiom this method deliberately avoids:")
@@ -172,8 +194,17 @@ function main()
         rng = mk()
         v = Vector{Float64}(undef, 64)
         xor_loop_f64(rng, 10); rand!(rng, v)                # compile first
+        scalar_bytes = @allocated(xor_loop_f64(rng, 1000))
+        fill_bytes = @allocated(rand!(rng, v))
         @printf("  %-18s scalar %d B / 1000 draws, rand! %d B\n", name,
-                @allocated(xor_loop_f64(rng, 1000)), @allocated(rand!(rng, v)))
+                scalar_bytes, fill_bytes)
+        record!("alloc", name, "scalar_bytes_per_1000_draws", scalar_bytes)
+        record!("alloc", name, "randfill_bytes", fill_bytes)
+    end
+
+    if csv_path !== nothing
+        write_csv(csv_path, ["commit", "section", "name", "metric", "value"], rows)
+        println("\nWrote ", csv_path)
     end
 end
 
