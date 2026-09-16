@@ -11,16 +11,27 @@
 # the output array, then the counter is advanced on the host by the number of
 # blocks consumed -- exactly as the CPU `_fill_u64!` path does.
 #
-#   * `rand!` -- a block's two word-pairs are two independent Float64
-#     uniforms, matching what two consecutive scalar `rand(rng)` calls would
-#     produce.
-#   * `randn!` -- the same two uniforms, fed through Box-Muller instead of
-#     kept separate, giving two independent standard normals. Box-Muller
-#     (not the Ziggurat algorithm the CPU `randn` uses) is the fit for a GPU
-#     kernel: it consumes exactly two uniforms and produces exactly two
-#     normals every time, with no rejection loop and so no warp divergence.
-#     Its output does not, and is not meant to, match CPU `randn` bit for
-#     bit -- the algorithms differ.
+#   * `rand!` into a `CuArray{Float64}` -- a block's two word-pairs are two
+#     independent Float64 uniforms, matching what two consecutive scalar
+#     `rand(rng)` calls would produce.
+#   * `randn!` into a `CuArray{Float64}` -- the same two uniforms, fed through
+#     Box-Muller instead of kept separate, giving two independent standard
+#     normals. Box-Muller (not the Ziggurat algorithm the CPU `randn` uses) is
+#     the fit for a GPU kernel: it consumes exactly two uniforms and produces
+#     exactly two normals every time, with no rejection loop and so no warp
+#     divergence. Its output does not, and is not meant to, match CPU `randn`
+#     bit for bit -- the algorithms differ.
+#   * `rand!`/`randn!` into a `CuArray{Float32}` -- Philox4x32-10 is natively
+#     32 bits per word, so a Float32 output needs only one word, not a pair:
+#     one block gives 4 uniforms (against 2 for Float64) and, through
+#     Box-Muller, 4 normals (against 2). Double the useful output per block,
+#     which is where the throughput is on a memory-bound fill kernel, and
+#     doubly so on a consumer GPU where FP64 arithmetic is throttled well
+#     below FP32. This also means it is *not* bit-compatible with the CPU's
+#     own `rand(rng, Float32)`, which is defined as `Float32(rand(rng))` --
+#     a full Float64 draw (two words) downcast, not a native 32-bit one. Same
+#     tradeoff as `randn!`: the counter-advance contract (non-overlapping
+#     draws) is kept, bit parity with a CPU conversion is not.
 #
 # The per-thread primitives (`philox4x32_10`, `philox4x32_counter`) that a
 # kernel would use directly are plain functions in src/philox/philox.jl and
@@ -70,6 +81,43 @@ function _philox_randn_kernel!(A, key::NTuple{2,UInt32}, base_hi::UInt64, base_l
         theta = 2.0 * Float64(pi) * u2
         @inbounds A[2b + 1] = r * cos(theta)
         2b + 2 <= n && (@inbounds A[2b + 2] = r * sin(theta))
+    end
+    return nothing
+end
+
+# Native word-per-output Float32 fill: output element `k` (0-based) is word
+# `k & 3` of block `k >> 2` -- four independent uniforms per block, against
+# two for the Float64 kernel above, since a Philox4x32 word already is 32
+# bits and needs no pairing.
+function _philox_fill_kernel_f32!(A, key::NTuple{2,UInt32}, base_hi::UInt64, base_lo::UInt64, n::Int)
+    k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
+    if 0 <= k < n
+        blk = _philox_block(key, base_hi, base_lo, k >> 2)
+        @inbounds A[k + 1] = close_open01(blk[(k & 3) + 1])
+    end
+    return nothing
+end
+
+# One thread per Philox block, writing up to four normals: Box-Muller applied
+# to each of the block's two word-pairs (words 1,2 and words 3,4).
+function _philox_randn_kernel_f32!(A, key::NTuple{2,UInt32}, base_hi::UInt64, base_lo::UInt64, n::Int)
+    b = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based block index
+    if 4b < n
+        blk = _philox_block(key, base_hi, base_lo, b)
+
+        u1, u2 = close_open01(blk[1]), close_open01(blk[2])
+        r1     = sqrt(-2f0 * log(1f0 - u1))
+        theta1 = 2f0 * Float32(pi) * u2
+        @inbounds A[4b + 1] = r1 * cos(theta1)
+        4b + 2 <= n && (@inbounds A[4b + 2] = r1 * sin(theta1))
+
+        if 4b + 3 <= n
+            u3, u4 = close_open01(blk[3]), close_open01(blk[4])
+            r2     = sqrt(-2f0 * log(1f0 - u3))
+            theta2 = 2f0 * Float32(pi) * u4
+            @inbounds A[4b + 3] = r2 * cos(theta2)
+            4b + 4 <= n && (@inbounds A[4b + 4] = r2 * sin(theta2))
+        end
     end
     return nothing
 end
@@ -137,6 +185,55 @@ function Random.randn!(rng::PhiloxRNG, A::CuArray{Float64})
     threads = 256
     blocks = cld(nblocks, threads)
     @cuda threads = threads blocks = blocks _philox_randn_kernel!(A, rng.key, base_hi, base_lo, n)
+    return A
+end
+
+"""
+    Random.rand!(rng::PhiloxRNG, A::CuArray{Float32}) -> A
+
+Fill `A` on the device with `Float32` uniforms in `[0, 1)`, one independent
+Philox4x32-10 word per output element -- four per block, twice the Float64
+kernel's rate, since a word is already 32 bits and needs no pairing. Advances
+`rng`'s counter by the number of blocks consumed, same contract as the
+`Float64` method.
+
+Not bit-compatible with the CPU's `rand(rng, Float32)`, which downcasts a full
+`Float64` draw instead of using a word directly; see the module source for
+why. Same block-alignment requirement as the `Float64` method.
+"""
+function Random.rand!(rng::PhiloxRNG, A::CuArray{Float32})
+    n = length(A)
+    n == 0 && return A
+    base_hi, base_lo = _philox_gpu_prep!("rand!", rng, cld(n, 4))
+
+    threads = 256
+    blocks = cld(n, threads)
+    @cuda threads = threads blocks = blocks _philox_fill_kernel_f32!(A, rng.key, base_hi, base_lo, n)
+    return A
+end
+
+"""
+    Random.randn!(rng::PhiloxRNG, A::CuArray{Float32}) -> A
+
+Fill `A` on the device with standard normal `Float32` draws via Box-Muller,
+one independent Philox4x32-10 block feeding two pairs of normals -- four per
+block, twice the `Float64` method's rate, for the same reason `rand!` doubles:
+a word is already 32 bits, so no pairing is needed to build a uniform.
+Advances `rng`'s counter by the number of blocks consumed, same contract as
+the `Float64` method.
+
+Same caveats as the `Float64` method: Box-Muller, not Ziggurat, and not meant
+to match any CPU output bit for bit. Same block-alignment requirement.
+"""
+function Random.randn!(rng::PhiloxRNG, A::CuArray{Float32})
+    n = length(A)
+    n == 0 && return A
+    nblocks = cld(n, 4)
+    base_hi, base_lo = _philox_gpu_prep!("randn!", rng, nblocks)
+
+    threads = 256
+    blocks = cld(nblocks, threads)
+    @cuda threads = threads blocks = blocks _philox_randn_kernel_f32!(A, rng.key, base_hi, base_lo, n)
     return A
 end
 

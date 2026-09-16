@@ -125,6 +125,95 @@ end
     end
 end
 
+@testset "PhiloxRNG CUDA fill (Float32, native word-per-output)" begin
+    key = (UInt32(55), UInt32(66))
+
+    @testset "matches a direct block computation, four outputs per block" begin
+        for n in (1, 3, 4, 5, 1000, 4001)         # exercise every within-block offset
+            rng = PhiloxRNG(key)
+            out = CUDA.zeros(Float32, n)
+            rand!(rng, out)
+            v = Array(out)
+
+            expected = Float32[]
+            b = 0
+            while length(expected) < n
+                ctr = philox4x32_counter(UInt64(0), UInt64(b))
+                blk = RandomDataStreams.philox(ctr, key, Val(10))
+                append!(expected, close_open01.(blk))
+                b += 1
+            end
+            @test v == expected[1:n]
+            @test get_state(rng)[1] == cld(n, 4)
+        end
+    end
+
+    @testset "values land in [0, 1)" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float32, 50_000)
+        rand!(rng, out)
+        v = Array(out)
+        @test all(0.0f0 .<= v .< 1.0f0)
+        @test 0.48 < sum(v) / length(v) < 0.52
+    end
+
+    @testset "refuses a mid-block generator" begin
+        rng = PhiloxRNG(key)
+        rand(rng)
+        out = CUDA.zeros(Float32, 10)
+        @test_throws ArgumentError rand!(rng, out)
+
+        reset_substream!(rng)
+        @test rand!(rng, out) === out
+    end
+
+    @testset "empty array is a no-op" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float32, 0)
+        rand!(rng, out)
+        @test get_state(rng)[1] == 0
+    end
+end
+
+@testset "PhiloxRNG CUDA randn! (Float32, Box-Muller)" begin
+    key = (UInt32(77), UInt32(88))
+
+    @testset "statistics of a large draw" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float32, 200_000)
+        randn!(rng, out)
+        v = Array(out)
+        @test all(isfinite, v)
+        @test abs(sum(v) / length(v)) < 0.02
+        @test abs(sum(v .^ 2) / length(v) - 1.0) < 0.05
+    end
+
+    @testset "advances the counter four outputs per block" begin
+        for n in (1, 2, 3, 4, 5, 83)
+            rng = PhiloxRNG(key)
+            randn!(rng, CUDA.zeros(Float32, n))
+            @test get_state(rng)[1] == cld(n, 4)
+        end
+    end
+
+    @testset "refuses a mid-block generator" begin
+        rng = PhiloxRNG(key)
+        rand(rng)
+        out = CUDA.zeros(Float32, 10)
+        @test_throws ArgumentError randn!(rng, out)
+
+        reset_substream!(rng)
+        @test randn!(rng, out) === out
+    end
+
+    @testset "empty array is a no-op" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float32, 0)
+        randn!(rng, out)
+        @test get_state(rng)[1] == 0
+    end
+end
+
 @testset "philox4x32_10 / philox4x32_counter as a per-thread kernel primitive" begin
     # A minimal user kernel: thread i draws one Philox4x32 block from counter
     # (i, 0) under a fixed key, with no stream object and no shared state --
