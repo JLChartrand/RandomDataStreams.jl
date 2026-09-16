@@ -1,14 +1,14 @@
 # GPU tests for the Philox4x32-10 CUDA extension (ext/RandomDataStreamsCUDAExt.jl).
 #
-# Not part of `Pkg.test()`: CUDA.jl pulls in real GPU driver/toolkit artifacts,
-# a cost every contributor running the plain test suite would otherwise pay
-# for a capability most of them cannot exercise. Run this file directly, on a
-# machine with an NVIDIA GPU:
+# Included from runtests.jl, so `Pkg.test()` always loads CUDA.jl (it is a
+# dependency of test/Project.toml) and runs these on any machine with a
+# functional CUDA device. On a machine without one -- CI included -- CUDA.jl
+# still precompiles, `CUDA.functional()` reports `false`, and the testset
+# below is skipped with an @info rather than silently passing nothing.
 #
-#   julia --project -e 'using Pkg; Pkg.add("CUDA"); include("test/test_cuda.jl")'
+# Run just this file directly, without the rest of the suite, with:
 #
-# On any other machine it loads, finds no functional device, and reports that
-# it skipped rather than silently passing nothing.
+#   julia --project=test -e 'include("test/test_cuda.jl")'
 
 using RandomDataStreams
 using Random

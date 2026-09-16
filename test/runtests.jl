@@ -1644,3 +1644,5 @@ include("test_testu01.jl")
 include("test_streams_interleaved.jl")
 
 include("test_bits.jl")
+
+include("test_cuda.jl")
