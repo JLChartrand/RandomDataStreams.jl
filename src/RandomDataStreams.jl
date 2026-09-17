@@ -56,4 +56,31 @@ export PhiloxRNG, PhiloxGen
 export Philox4x64RNG, Philox4x64Gen
 export philox4x32_10, philox4x32_counter, close_open01
 export Threefry4x64RNG, Threefry4x64Gen, Threefry4x32RNG, Threefry4x32Gen
+
+# GPU-only normal-variate algorithms, compared against `randn!`'s Box-Muller
+# (branch philox-gpu-randn-test). Declared here, as empty generic functions,
+# so the package always exports a name to dispatch on; the CUDA extension
+# (ext/RandomDataStreamsCUDAExt.jl) adds the actual methods when CUDA.jl is
+# loaded alongside this package, and its docstrings are the ones that apply.
+"""
+    randn_inversion!(rng, A) -> A
+
+Standard-normal fill via inversion (`Phi^-1` of a Philox-generated uniform,
+one input to one output). Only defined for `PhiloxRNG`/`CuArray`, by the CUDA
+extension -- see its docstring for the full contract and, more importantly,
+why this exists alongside `randn!`'s Box-Muller.
+"""
+function randn_inversion! end
+
+"""
+    randn_polar!(rng, A) -> A
+
+Standard-normal fill via Marsaglia's polar method (accept-reject), kept only
+for comparison against [`randn_inversion!`](@ref) and `randn!`'s Box-Muller.
+Only defined for `PhiloxRNG`/`CuArray{Float64}`, by the CUDA extension -- see
+its docstring.
+"""
+function randn_polar! end
+
+export randn_inversion!, randn_polar!
 end # module
