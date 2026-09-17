@@ -37,6 +37,19 @@
 # are expected to differ outright -- Box-Muller on the GPU, Ziggurat on the
 # CPU, deliberately different algorithms (see ext/RandomDataStreamsCUDAExt.jl).
 #
+# Three GPU-only normal-variate rows (branch philox-gpu-randn-test) put
+# `randn!` (Box-Muller), `randn_inversion!` (Phi^-1 via CUDA's `normcdfinv`),
+# and `randn_polar!` (Marsaglia's polar method, an accept-reject algorithm)
+# side by side against the *same* CPU Ziggurat baseline, so their relative
+# GPU cost is comparable directly from this one table. Do not read the "CPU"
+# column for those three as three different measurements -- it is the same
+# `randn!` timing repeated, included only so each row's speedup ratio is
+# self-contained. `randn_polar!`'s reservation of `_POLAR_BUDGET` Philox
+# blocks per output pair (see its docstring) also means it advances the RNG
+# much further per call than the other two for the same `N` -- irrelevant to
+# a throughput number taken from a fresh generator each run, but relevant if
+# reusing the same stream afterwards.
+#
 # Pass a path as the first argument to also write the table as a CSV
 # (columns: commit,N,case,cpu_ms,gpu_ms,speedup). Plain
 # `julia gpu_throughput.jl`, with no argument, prints only.
@@ -67,9 +80,15 @@ function run_case(N::Int, rows)
         ("sum(exp(u)), u ~ U(0,1)",
          () -> (rand!(cpu, cbuf); sum(exp, cbuf)),
          () -> (rand!(gpu, gbuf); sum(exp, gbuf))),
-        ("sum(n), n ~ N(0,1)",
+        ("sum(n), n ~ N(0,1) [Box-Muller]",
          () -> (randn!(cpu, cbuf); sum(cbuf)),
          () -> (randn!(gpu, gbuf); sum(gbuf))),
+        ("sum(n), n ~ N(0,1) [inversion]",
+         () -> (randn!(cpu, cbuf); sum(cbuf)),
+         () -> (randn_inversion!(gpu, gbuf); sum(gbuf))),
+        ("sum(n), n ~ N(0,1) [polar/accept-reject]",
+         () -> (randn!(cpu, cbuf); sum(cbuf)),
+         () -> (randn_polar!(gpu, gbuf); sum(gbuf))),
     ]
 
     commit = provenance().commit
