@@ -125,6 +125,178 @@ end
     end
 end
 
+@testset "PhiloxRNG CUDA randn_inversion! (inversion, comparison branch)" begin
+    key = (UInt32(111), UInt32(222))
+
+    @testset "matches normcdfinv of a direct block computation" begin
+        n = 4001
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, n)
+        randn_inversion!(rng, out)
+        v = Array(out)
+
+        u = Float64[]
+        b = 0
+        while length(u) < n
+            ctr = philox4x32_counter(UInt64(0), UInt64(b))
+            blk = RandomDataStreams.philox(ctr, key, Val(10))
+            lo = (UInt64(blk[2]) << 32) | UInt64(blk[1])
+            hi = (UInt64(blk[4]) << 32) | UInt64(blk[3])
+            for w in (lo, hi)
+                push!(u, reinterpret(Float64, 0x3ff0000000000000 | (w & 0x000fffffffffffff) | 0x1) - 1.0)
+            end
+            b += 1
+        end
+        expected = Array(CUDA.normcdfinv.(CuArray(u[1:n])))
+        @test v ≈ expected
+    end
+
+    @testset "statistics of a large draw" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 200_000)
+        randn_inversion!(rng, out)
+        v = Array(out)
+        @test all(isfinite, v)
+        @test abs(sum(v) / length(v)) < 0.02
+        @test abs(sum(v .^ 2) / length(v) - 1.0) < 0.05
+    end
+
+    @testset "deterministic for a fixed key and counter" begin
+        a = PhiloxRNG(key); out_a = CUDA.zeros(Float64, 37)
+        b = PhiloxRNG(key); out_b = CUDA.zeros(Float64, 37)
+        randn_inversion!(a, out_a)
+        randn_inversion!(b, out_b)
+        @test Array(out_a) == Array(out_b)
+    end
+
+    @testset "antithetic symmetry: Phi^-1(1 - u) == -Phi^-1(u)" begin
+        # The whole point of this function: componentwise reflection of the
+        # underlying uniform negates the corresponding normal, exactly, with
+        # no dependence on any other uniform -- see its docstring. Checked
+        # directly against the device intrinsic it is built on, over uniforms
+        # kept away from the exact 0/1 endpoints (where the identity is still
+        # true, in the sense that -Inf and +Inf are negatives of each other,
+        # but isapprox is not going to agree).
+        u = Array(CUDA.rand(Float64, 100_000))
+        u = clamp.(u, 1.0e-12, 1.0 - 1.0e-12)
+        z    = Array(CUDA.normcdfinv.(CuArray(u)))
+        zbar = Array(CUDA.normcdfinv.(CuArray(1.0 .- u)))
+        @test zbar ≈ -z
+    end
+
+    @testset "advances the counter exactly like randn! does" begin
+        for n in (1, 2, 3, 41)
+            a = PhiloxRNG(key); randn_inversion!(a, CUDA.zeros(Float64, n))
+            b = PhiloxRNG(key); randn!(b, CUDA.zeros(Float64, n))
+            @test get_state(a)[1] == get_state(b)[1] == cld(n, 2)
+        end
+    end
+
+    @testset "refuses a mid-block generator" begin
+        rng = PhiloxRNG(key)
+        rand(rng)
+        out = CUDA.zeros(Float64, 10)
+        @test_throws ArgumentError randn_inversion!(rng, out)
+
+        reset_substream!(rng)
+        @test randn_inversion!(rng, out) === out
+    end
+
+    @testset "empty array is a no-op" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 0)
+        randn_inversion!(rng, out)
+        @test get_state(rng)[1] == 0
+    end
+end
+
+@testset "PhiloxRNG CUDA randn_inversion! (Float32, comparison branch)" begin
+    key = (UInt32(112), UInt32(223))
+
+    @testset "statistics of a large draw" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float32, 200_000)
+        randn_inversion!(rng, out)
+        v = Array(out)
+        @test all(isfinite, v)
+        @test abs(sum(v) / length(v)) < 0.02
+        @test abs(sum(v .^ 2) / length(v) - 1.0) < 0.05
+    end
+
+    @testset "advances the counter four outputs per block" begin
+        for n in (1, 2, 3, 4, 5, 83)
+            rng = PhiloxRNG(key)
+            randn_inversion!(rng, CUDA.zeros(Float32, n))
+            @test get_state(rng)[1] == cld(n, 4)
+        end
+    end
+
+    @testset "refuses a mid-block generator" begin
+        rng = PhiloxRNG(key)
+        rand(rng)
+        out = CUDA.zeros(Float32, 10)
+        @test_throws ArgumentError randn_inversion!(rng, out)
+
+        reset_substream!(rng)
+        @test randn_inversion!(rng, out) === out
+    end
+
+    @testset "empty array is a no-op" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float32, 0)
+        randn_inversion!(rng, out)
+        @test get_state(rng)[1] == 0
+    end
+end
+
+@testset "PhiloxRNG CUDA randn_polar! (accept-reject, comparison branch)" begin
+    key = (UInt32(113), UInt32(224))
+
+    @testset "statistics of a large draw" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 200_000)
+        randn_polar!(rng, out)
+        v = Array(out)
+        @test all(isfinite, v)
+        @test abs(sum(v) / length(v)) < 0.02
+        @test abs(sum(v .^ 2) / length(v) - 1.0) < 0.05
+    end
+
+    @testset "deterministic for a fixed key and counter" begin
+        a = PhiloxRNG(key); out_a = CUDA.zeros(Float64, 37)
+        b = PhiloxRNG(key); out_b = CUDA.zeros(Float64, 37)
+        randn_polar!(a, out_a)
+        randn_polar!(b, out_b)
+        @test Array(out_a) == Array(out_b)
+    end
+
+    @testset "reserves _POLAR_BUDGET blocks per output pair" begin
+        budget = Base.get_extension(RandomDataStreams, :RandomDataStreamsCUDAExt)._POLAR_BUDGET
+        for n in (1, 2, 3, 41)
+            rng = PhiloxRNG(key)
+            randn_polar!(rng, CUDA.zeros(Float64, n))
+            @test get_state(rng)[1] == cld(n, 2) * budget
+        end
+    end
+
+    @testset "refuses a mid-block generator" begin
+        rng = PhiloxRNG(key)
+        rand(rng)
+        out = CUDA.zeros(Float64, 10)
+        @test_throws ArgumentError randn_polar!(rng, out)
+
+        reset_substream!(rng)
+        @test randn_polar!(rng, out) === out
+    end
+
+    @testset "empty array is a no-op" begin
+        rng = PhiloxRNG(key)
+        out = CUDA.zeros(Float64, 0)
+        randn_polar!(rng, out)
+        @test get_state(rng)[1] == 0
+    end
+end
+
 @testset "PhiloxRNG CUDA fill (Float32, native word-per-output)" begin
     key = (UInt32(55), UInt32(66))
 

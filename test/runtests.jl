@@ -1645,4 +1645,6 @@ include("test_streams_interleaved.jl")
 
 include("test_bits.jl")
 
+include("test_randn_variance_reduction.jl")
+
 include("test_cuda.jl")
