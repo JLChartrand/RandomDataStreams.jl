@@ -18,3 +18,15 @@ function write_csv(path::AbstractString, header::Vector{String}, rows)
         end
     end
 end
+
+"""
+    append_csv(path, header, row)
+
+Append one `row` to `path`, writing `header` first if the file does not exist
+yet. For a benchmark that runs one case per process (so no single process
+holds all the rows) and must not lose earlier cases when a later one fails.
+"""
+function append_csv(path::AbstractString, header::Vector{String}, row)
+    isfile(path) || open(io -> println(io, join(header, ",")), path, "w")
+    open(io -> println(io, join(row, ",")), path, "a")
+end
