@@ -9,7 +9,11 @@
 # Every (contender, eltype) case runs in its own Julia process, so a CUDA fault
 # in one case cannot poison the next, and a failed case does not stop the run.
 #
-# Everything lands in results/<timestamp>-philox-vs-cuda/ (gitignored):
+# A run is written to results/<timestamp>-philox-vs-cuda/ (gitignored scratch,
+# so the working tree stays clean while it runs and every result is stamped
+# with a clean commit). When it finishes, the directory is copied to
+# results/philox-vs-cuda/<timestamp>/ (tracked), committed, and pushed. Its
+# contents:
 #
 #   philox_vs_cuda.csv   one row per case that completed
 #   errors.txt           ONLY EXISTS IF SOMETHING WENT WRONG: every exception
@@ -20,7 +24,8 @@
 #   logs/<case>.log      full stdout+stderr of each case
 #   sysinfo.txt          host, OS, Julia, GPU/CUDA versions
 #   nvidia-smi.txt       GPU clocks/temperature/other processes, before the run
-#   ../<same name>.tar.gz  all of the above in one file, to send back
+#   ../<same name>.tar.gz  all of the above in one file (scratch only, never
+#                        committed)
 #
 # Tunables (environment variables):
 #
@@ -30,11 +35,21 @@
 #   BENCH_REPS         timed repetitions per case      (default 5)
 #   BENCH_CONTENDERS   space-separated subset to run   (default: all five)
 #   BENCH_TIMEOUT      seconds before a case is killed (default 1800)
+#   BENCH_NO_PUSH      set to 1 to keep the results local: nothing is copied
+#                      into the tracked folder, committed or pushed (use for
+#                      smoke tests, so they do not land in git)
 #
 # e.g. a quick smoke test:  BENCH_TOTAL_LOG2=24 BENCH_REPS=2 ./philox_vs_cuda.sh
 #
-# Exit status: 0 if every case completed, 1 if any case failed. (Failing cases
-# are recorded, not fatal: the script always runs all of them.)
+# Publishing needs a git identity and push access on the workstation. If it
+# fails, the results are still complete in the scratch directory, the reason is
+# printed and written to git-publish-error.txt beside them, and the exit status
+# is non-zero. Only the published run's directory is committed, whatever else
+# is staged.
+#
+# Exit status: 0 if every case completed and the results were published, 1
+# otherwise. (Failing cases are recorded, not fatal: the script always runs all
+# of them.)
 
 # No `set -e`: a failing case must not stop the others. `-u` and pipefail stay.
 set -uo pipefail
@@ -137,8 +152,43 @@ else
     echo "All $total_cases cases completed; no errors."
 fi
 
-# One file to send back.
+# One file with everything, for when git is not an option.
 tar -C "$SCRIPT_DIR/results" -czf "$SCRIPT_DIR/results/$RUN_NAME.tar.gz" "$RUN_NAME" \
     && echo "Archive: $SCRIPT_DIR/results/$RUN_NAME.tar.gz"
 
-[ "$failed" -eq 0 ]
+# Publish: copy into the tracked folder, commit just that, push.
+# Reads the details on stdin. The flag is the error file's existence, not a
+# variable: this runs on the right of a pipe, i.e. in a subshell.
+readonly PUBLISH_ERR="$OUT_DIR/git-publish-error.txt"
+readonly PUBLISH_LOG="$SCRIPT_DIR/results/$RUN_NAME.publish.log"   # outside OUT_DIR: not copied
+publish_error() {
+    { echo "$1"; cat; } > "$PUBLISH_ERR"
+    echo "PUBLISH FAILED: $1" >&2
+    echo "  details: $PUBLISH_ERR" >&2
+    echo "  the results are intact in $OUT_DIR" >&2
+}
+
+if [ "${BENCH_NO_PUSH:-0}" = "1" ]; then
+    echo "BENCH_NO_PUSH=1: results kept local, nothing committed or pushed."
+else
+    readonly PUB_REL="scripts/benchmarks/results/philox-vs-cuda/${RUN_NAME%-philox-vs-cuda}"
+    repo_root="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>&1)" \
+        || { echo "$repo_root" | publish_error "not inside a git checkout"; repo_root=""; }
+
+    if [ -n "$repo_root" ]; then
+        pub_dir="$repo_root/$PUB_REL"
+        {
+            mkdir -p "$pub_dir" \
+                && cp -r "$OUT_DIR"/. "$pub_dir"/ \
+                && git -C "$repo_root" add -f -- "$PUB_REL" \
+                && git -C "$repo_root" commit -q \
+                    -m "bench: philox-vs-cuda results, ${RUN_NAME%-philox-vs-cuda} ($failed of $total_cases cases failed)" \
+                    -- "$PUB_REL" \
+                && git -C "$repo_root" push origin HEAD
+        } > "$PUBLISH_LOG" 2>&1 \
+            && echo "Published $PUB_REL (committed and pushed)." \
+            || tail -n 40 "$PUBLISH_LOG" | publish_error "committing or pushing the results failed"
+    fi
+fi
+
+[ "$failed" -eq 0 ] && [ ! -f "$PUBLISH_ERR" ]

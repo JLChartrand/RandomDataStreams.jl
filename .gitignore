@@ -2,7 +2,13 @@ docs/build/
 docs/Manifest.toml
 Manifest.toml
 testu01-results/
-scripts/benchmarks/results/
+# Benchmark runs are scratch until published: run-all.sh writes here, and so
+# does philox_vs_cuda.sh while it runs (a tracked or untracked-but-visible
+# directory would make every case's provenance say "dirty"). Only the
+# philox-vs-cuda/ subdirectory is tracked -- philox_vs_cuda.sh copies a finished
+# run into it and commits it.
+scripts/benchmarks/results/*
+!scripts/benchmarks/results/philox-vs-cuda/
 
 # Planning and editorial notes now live in the private companion repository
 # fbastin/randomdatastreams-papers; the JOSS paper itself is on the unmerged
