@@ -249,6 +249,30 @@ end
     end
 end
 
+# A launch grid smaller than the kernel's index range leaves the tail of the
+# array untouched, and a buffer that starts as zeros hides it: the statistics
+# tests above only notice through a wrong variance. A NaN sentinel makes "every
+# element was written" an exact check, for every GPU fill in the extension.
+@testset "PhiloxRNG CUDA fills write every element" begin
+    key = (UInt32(114), UInt32(225))
+    fills = [
+        ("rand! Float64",             Float64, rand!),
+        ("rand! Float32",             Float32, rand!),
+        ("randn! Float64",            Float64, randn!),
+        ("randn! Float32",            Float32, randn!),
+        ("randn_inversion! Float64",  Float64, randn_inversion!),
+        ("randn_inversion! Float32",  Float32, randn_inversion!),
+        ("randn_polar! Float64",      Float64, randn_polar!),
+    ]
+    # Sizes chosen to be awkward: not a multiple of 2, 4, 256 or 1024, and one
+    # large enough that a quarter-sized grid is many blocks short.
+    for (name, T, f) in fills, n in (1, 3, 1000, 100_003, 1_000_001)
+        out = CUDA.fill(T(NaN), n)
+        f(PhiloxRNG(key), out)
+        @test all(isfinite, Array(out))
+    end
+end
+
 @testset "PhiloxRNG CUDA randn_polar! (accept-reject, comparison branch)" begin
     key = (UInt32(113), UInt32(224))
 

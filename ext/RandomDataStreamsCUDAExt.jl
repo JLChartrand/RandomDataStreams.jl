@@ -395,8 +395,12 @@ function randn_inversion!(rng::PhiloxRNG, A::CuArray{Float32})
     nblocks = cld(n, 4)
     base_hi, base_lo = _philox_gpu_prep!("randn_inversion!", rng, nblocks)
 
+    # One thread per *output element* (this kernel, like the Float32 `rand!`
+    # kernel, indexes `k` up to `n`), not per block: the grid is sized from `n`
+    # even though the counter advance above is sized from `nblocks`. Sizing it
+    # from `nblocks` wrote only the first quarter of `A`.
     threads = 256
-    blocks = cld(nblocks, threads)
+    blocks = cld(n, threads)
     @cuda threads = threads blocks = blocks _philox_randn_kernel_inversion_f32!(A, rng.key, base_hi, base_lo, n)
     return A
 end
