@@ -84,7 +84,7 @@ rand(rng)             # 0.3185275653967945
 
 ```julia
 x = Xoshiro256p(UInt64[1, 2, 3, 4])
-rand(x)               # Float64 in [0, 1)
+rand(x)               # Float64 in (0, 1)
 ```
 
 ## Supported output types
@@ -103,8 +103,8 @@ flags rather than cryptography.
 
 ### Xoshiro256p
 
-- `Float64` (native path), `Float32`, `Float16` — the last two from the top 24
-  and 11 bits of one output, so both stay strictly below 1
+- `Float64` (native path), `Float32`, `Float16`, all in the open interval
+  `(0, 1)` — see [Implementation Notes](implementation.md)
 - `UInt64`
 - Ranges: `rand(rng, 1:10)` works through the standard `Random` machinery
 

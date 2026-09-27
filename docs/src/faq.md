@@ -66,6 +66,15 @@ own representation — its seed vector, or a `UInt128` for PCG — is taken as t
 state itself rather than hashed. See
 [Streams & Substreams](streams.md) for the full table.
 
+## Can `rand` return 0 or 1?
+
+No, for every generator and every floating-point type: draws lie in the open
+interval `(0, 1)`, so `-log(rand(rng))` or a quantile function applied to a
+draw is always finite. The price is one bit of resolution — 52 bits for a
+`Float64`, 23 for a `Float32`. In exchange the draws sit on a grid symmetric
+about 1/2, so `1 - u` is exact and is itself a possible draw, which is what
+antithetic variates need. See [Implementation Notes](implementation.md).
+
 ## How do I run truly parallel simulations?
 
 Take one stream per replication first, then parallelise over the replications:

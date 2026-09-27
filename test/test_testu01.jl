@@ -39,7 +39,7 @@ end
 
     for (name, gen_init) in generators
         @testset "$name" begin
-            rng = next_stream!(gen_init())          # Float64 in [0, 1)
+            rng = next_stream!(gen_init())          # Float64 in (0, 1)
             check_smallcrush(() -> TU01.Gen(single_stream(rng), name),
                              "SmallCrush / $name")
         end

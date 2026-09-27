@@ -79,8 +79,8 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             (Int128,  Int128[-67889169649162077992496674455215081316,
                              46292077500965604301225650373683799510,
                              -128985226324011672590792899314054547755]),
-            (Float32, Float32[0.8517306, 0.63826084, 0.5828004]),
-            (Float16, Float16[0.2314, 0.377, 0.0791]),
+            (Float32, Float32[0.12701112, 0.31852752, 0.30918604]),
+            (Float16, Float16[0.1274, 0.3188, 0.309]),
             (Bool,    Bool[1, 0, 1]),
         )
             r = next_stream!(MRG32k3aGen())
@@ -91,7 +91,7 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     @testset "MRG32k3a output properties" begin
         rng = MRG32k3a()
         u = [rand(rng) for _ in 1:100_000]
-        @test all(0.0 .<= u .< 1.0)
+        @test all(0.0 .< u .< 1.0)
         @test abs(sum(u) / length(u) - 0.5) < 0.01
 
         r = next_stream!(MRG32k3aGen())
@@ -283,8 +283,8 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             (Int128,  Int128[145367540460856542937830089570103140629,
                              -165029623112855383596246194477897830966,
                              59600977387313586812902884216453722919]),
-            (Float32, Float32[0.7247648, 0.7058604, 0.6235378]),
-            (Float16, Float16[0.2734, 0.4082, 0.02148]),
+            (Float32, Float32[0.9999644, 0.32937115, 0.67280656]),
+            (Float16, Float16[0.9995, 0.3296, 0.6724]),
             (Bool,    Bool[0, 0, 0]),
         )
             r = next_stream!(MRG63k3aGen())
@@ -564,7 +564,7 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     @testset "Xoshiro256p outputs" begin
         x = Xoshiro256p(UInt64[1, 2, 3, 4])
         u = [rand(x) for _ in 1:100_000]
-        @test all(0.0 .<= u .< 1.0)
+        @test all(0.0 .< u .< 1.0)
         @test abs(sum(u) / length(u) - 0.5) < 0.01
 
         x = Xoshiro256p(UInt64[1, 2, 3, 4])
@@ -686,7 +686,7 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     @testset "Philox outputs" begin
         rng = next_stream!(PhiloxGen())
         v = [rand(rng) for _ in 1:10_000]
-        @test all(0 .<= v .< 1)
+        @test all(0 .< v .< 1)
         @test 0.48 < sum(v) / length(v) < 0.52
 
         rng = next_stream!(PhiloxGen())
@@ -1261,30 +1261,60 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
-    @testset "Float32 and Float16 stay below 1" begin
-        # These were `Float32(rand(rng))`, which rounds every Float64 draw above
-        # 1 - 2^-25 up to 1.0f0 (above 1 - 2^-12 for Float16). They were also
-        # defined on `::Type` only, so `rand(rng, Float32, n)` bypassed them and
-        # took the low 23 bits of the word instead: scalar and array draws
-        # disagreed. Both paths are now one sampler method on the top bits.
+    @testset "every float draw lies in (0, 1)" begin
+        # Inversion needs both ends open: a quantile function, -log(u) or
+        # Phi^-1(u) is infinite at 0 or at 1. The constructions this replaces
+        # each failed at one end -- next / typemax(UInt64) and Float32(rand(rng))
+        # could return 1, filling the mantissa of 1.0 could return 0, and the
+        # MRG array path (1 + u) - 1 could return either -- and the narrow
+        # floats were defined on `::Type` only, so `rand(rng, Float32, n)`
+        # bypassed them and disagreed with the scalar draws.
         R = RandomDataStreams
-        for T in (Float32, Float16)
-            @test R._u01(T, typemax(UInt64)) == prevfloat(one(T))
-            @test R._u01(T, typemax(UInt32)) == prevfloat(one(T))
-            @test R._u01(T, UInt64(0)) == zero(T)
-            @test R._u01(T, UInt32(0)) == zero(T)
+        for T in (Float64, Float32, Float16)
+            p = precision(T)
+            lo, hi = T(2)^-p, prevfloat(one(T))
+            @test R._u01(T, typemin(UInt64)) == lo
+            @test R._u01(T, typemax(UInt64)) == hi
+            if T !== Float64
+                @test R._u01(T, typemin(UInt32)) == lo
+                @test R._u01(T, typemax(UInt32)) == hi
+                @test R._u01(T, R.PMF.norm) == lo          # the smallest MRG draw
+                @test R._u01(T, prevfloat(1.0)) == hi
+            end
+            # the grid is symmetric: 1 - u is exact and is itself a draw
+            for w in (0x0123456789abcdef, 0xfedcba9876543210, typemax(UInt64))
+                @test one(T) - R._u01(T, w) == R._u01(T, ~w)
+            end
         end
 
-        # xoshiro256+ returns s[1] + s[4], so this state's next output is
-        # typemax(UInt64), which the old conversion turned into exactly 1.0f0
-        x = Xoshiro256p(UInt64[typemax(UInt64), 1, 1, 0])
-        @test rand(copy(x), Float32) == prevfloat(1f0)
-        @test rand(copy(x), Float16) == prevfloat(Float16(1))
+        # xoshiro256+ returns s[1] + s[4], so these two states put its next
+        # output at the two ends of the word: 0 and typemax(UInt64)
+        for (s, expect) in ((UInt64[1, 2, 3, typemax(UInt64)], T -> T(2)^-precision(T)),
+                            (UInt64[typemax(UInt64), 1, 1, 0], T -> prevfloat(one(T))))
+            x = Xoshiro256p(s)
+            for T in (Float64, Float32, Float16)
+                @test rand(copy(x), T) == expect(T)
+            end
+        end
 
-        # every word-based family: scalar, array and rand! agree, and the value
-        # is the documented function of the raw draw -- the 64-bit output for
-        # xoshiro and PCG, the 32-bit draw for the counter-based families
+        # MRG63k3a: for the largest combinations k * norm rounds to exactly 1.0,
+        # as in the reference C code. A stored state with Cg[3] == Cg[6] gives
+        # k = m1, the largest of them.
+        P = R.PMF63
+        @test Float64(P.m1) * P.norm == 1.0
+        C = [1, 2, 7, 4, 5, 7]
+        r = MRG63k3a(R._unstep63(C))
+        @test r.Cg == C
+        @test rand(copy(r)) == prevfloat(1.0)
+        @test rand(copy(r), Float32) == prevfloat(1f0)
+
+        # every family: scalar, array and rand! agree, and the value is the
+        # documented function of the raw draw -- the 64-bit output for Float64,
+        # and for the narrower floats the 64-bit output (xoshiro, PCG), the
+        # 32-bit draw (counter-based) or the native Float64 (MRG)
         variants = [
+            ("MRG32k3a",        () -> next_stream!(MRG32k3aGen()),              Float64),
+            ("MRG63k3a",        () -> next_stream!(MRG63k3aGen()),              Float64),
             ("Xoroshiro128p",   () -> next_stream!(R.Xoroshiro128pGen(12345)),  UInt64),
             ("Xoroshiro128ss",  () -> next_stream!(R.Xoroshiro128ssGen(12345)), UInt64),
             ("Xoroshiro128pp",  () -> next_stream!(R.Xoroshiro128ppGen(12345)), UInt64),
@@ -1301,26 +1331,27 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             ("Threefry4x32-20", () -> next_stream!(Threefry4x32Gen(12345)),     UInt32),
             ("Threefry4x64-20", () -> next_stream!(Threefry4x64Gen(12345)),     UInt32),
         ]
-        for (name, mk, U) in variants
+        @test length(variants) == 17
+        for (name, mk, narrow) in variants
             @testset "$name" begin
-                for T in (Float32, Float16)
+                for T in (Float64, Float32, Float16)
                     a, b, c, d = mk(), mk(), mk(), mk()
                     s = [rand(a, T) for _ in 1:9]
                     @test rand(b, T, 9) == s
                     v = Vector{T}(undef, 9)
                     rand!(c, v)
                     @test v == s
-                    @test s == [R._u01(T, rand(d, U)) for _ in 1:9]
-                    @test all(0 .<= s .< 1)
+                    @test all(0 .< s .< 1)
+                    if narrow === Float64                        # MRG
+                        raw = [rand(d) for _ in 1:9]
+                        @test s == (T === Float64 ? raw : [R._u01(T, u) for u in raw])
+                    else
+                        U = T === Float64 ? UInt64 : narrow
+                        @test s == [R._u01(T, rand(d, U)) for _ in 1:9]
+                    end
                 end
+                @test rand(mk()) == rand(mk(), Float64)
             end
-        end
-
-        # the MRG families go through the standard library's construction,
-        # which was never affected; the scalar and array paths agree there too
-        for M in (MRG32k3aGen, MRG63k3aGen), T in (Float32, Float16)
-            a, b = next_stream!(M()), next_stream!(M())
-            @test rand(b, T, 9) == [rand(a, T) for _ in 1:9]
         end
     end
 
@@ -1456,7 +1487,7 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             n = statewords(T)
             x = T(fill(UInt64(0xdecafbad), n))
             u = [rand(x) for _ in 1:10_000]
-            @test all(0.0 .<= u .< 1.0)
+            @test all(0.0 .< u .< 1.0)
             @test abs(sum(u) / length(u) - 0.5) < 0.02
             @test rand(x, UInt64) isa UInt64
             @test rand(x, Float32) isa Float32
@@ -1578,7 +1609,7 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             @test all(1 .<= rand(r, 1:10) .<= 10)
             v = rand(r, 5); @test length(v) == 5
             @test size(rand(r, Int, 2, 2)) == (2, 2)
-            d = Vector{Float64}(undef, 4); rand!(r, d); @test all(0 .<= d .< 1)
+            d = Vector{Float64}(undef, 4); rand!(r, d); @test all(0 .< d .< 1)
             n = randn(r); @test n isa Float64
             e = randexp(r); @test e >= 0
             @test sort(shuffle(r, collect(1:8))) == collect(1:8)

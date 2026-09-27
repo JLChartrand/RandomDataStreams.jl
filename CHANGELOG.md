@@ -8,6 +8,36 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Every floating-point draw lies in the open interval `(0, 1)`**, for all
+  seventeen generators, in `Float64`, `Float32` and `Float16`, and through
+  `rand(rng)`, `rand(rng, T)`, arrays and `rand!` alike, so that inversion is
+  finite for every draw. The word-based families (xoshiro, PCG, counter-based)
+  now return `(2k + 1) · 2^-p`, with `k` the top `p − 1` bits of the word and
+  `p` the precision of the type: exact values, symmetric under `u ↦ 1 − u`, at
+  the cost of one bit of resolution. **The values drawn change** for these
+  fifteen generators in every float type, and for the MRG families in
+  `Float32` and `Float16`. The scalar `Float64` draws of the MRG families are
+  unchanged, but for the MRG63k3a cap below, and array fills now match them.
+  TestU01 results measured on `Float64` for the word-based families predate
+  the change; those of the MRG families do not.
+  Several paths had reached an end of the interval:
+  - `rand(rng)` on xoshiro divided by `typemax(UInt64)`, returning exactly 1
+    for the top `2^10` outputs;
+  - `rand(rng, Float32)` was `Float32(rand(rng))`, returning `1.0f0` once in
+    `2^25` draws (`Float16(1)` once in `2^12`);
+  - PCG, the counter-based families and the standard library's `Float32` path
+    filled the mantissa of 1.0 and subtracted 1, which can return 0;
+  - arrays from the MRG families went through `(1 + u) − 1`, which for
+    MRG63k3a returned 0 below `2^-53` and 1 above `1 − 2^-53`;
+  - MRG63k3a's own `k / (m1 + 1)` rounds to exactly 1.0 for the twelve largest
+    `k`, as in L'Ecuyer's C code; those draws are now capped at
+    `prevfloat(1.0)`.
+  The narrow floats were also defined on `::Type` only, so `rand(rng, Float32,
+  n)` bypassed them, read the low bits of the word, and disagreed with the
+  scalar draws. All paths are now sampler methods, and the test suite checks
+  scalar, array and `rand!` against each other and against the documented
+  construction for every generator.
+
 - **TestU01 is driven directly, and RNGTest.jl is no longer a dependency.**
   `test/tu01.jl` calls the same `TestU01_jll` artifact the wrapper used, and
   covers what this package runs: the three Crush batteries, the `Repeat`
@@ -99,20 +129,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   side by side.
 
 ### Fixed
-
-- **`Float32` and `Float16` draws could equal 1.** On the xoshiro, PCG and
-  counter-based families, `rand(rng, Float32)` was `Float32(rand(rng))`, which
-  rounds every `Float64` draw above `1 - 2^-25` up to `1.0f0` — about one draw
-  in 33 million, and one in 4096 for `Float16`. The methods were also defined
-  on `::Type` only, so `rand(rng, Float32, n)` and `rand!` bypassed them and
-  took the low 23 bits of the word through `Random`'s generic path: the scalar
-  and array draws of the same stream disagreed, and for the `+` scramblers the
-  array path read their weakest bits. Both paths are now one sampler method
-  that scales the top 24 (11) bits of one word by `2^-24` (`2^-11`), the
-  construction of the standard library's `Xoshiro` and of NumPy; a
-  counter-based family with 32-bit words spends one word per `Float32` instead
-  of two. The values drawn change for these fifteen generators; the MRG
-  families, which went through the standard library's construction, do not.
 
 - **Ranges on the xoshiro and PCG families were sampled by folding.**
   `rand(rng::LinRNG, ::UnitRange{Int64})` and its `PCGRNG` twin reduced one

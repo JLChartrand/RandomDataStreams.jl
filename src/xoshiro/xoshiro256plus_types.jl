@@ -1,14 +1,13 @@
 """
-Generates a `Float32` in [0, 1) from any xoshiro/xoroshiro generator: the top
-24 bits of one output, scaled by 2^-24. The top bits are the ones the `+`
-scramblers leave strongest.
+Generates a `Float32` in (0, 1) from any xoshiro/xoroshiro generator: the top
+23 bits of one output, as an odd multiple of 2^-24.
 """
 rand(rng::LinRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) =
     _u01(Float32, next(rng))
 
 """
-Generates a `Float16` in [0, 1) from any xoshiro/xoroshiro generator: the top
-11 bits of one output, scaled by 2^-11.
+Generates a `Float16` in (0, 1) from any xoshiro/xoroshiro generator: the top
+10 bits of one output, as an odd multiple of 2^-11.
 """
 rand(rng::LinRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) =
     _u01(Float16, next(rng))

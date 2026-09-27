@@ -43,14 +43,25 @@ end
 
 """
 Produces a raw random number with 63 bits of precision, of which a Float64
-keeps 53.
+keeps 53, in (0, 1). The combination `k` lies in `1:m1` and is scaled by
+`1/(m1 + 1)`, but for the twelve largest values of `k` the product rounds to
+exactly 1.0 -- in the reference C code as well -- so the result is capped at
+`prevfloat(1.0)`. Every other draw is the reference value.
 """
 @inline function rand(rng::MRG63k3a)::Float64
     p1, p2 = next_pair!(rng)
-    return combine63(p1, p2) * PMF63.norm
+    return min(combine63(p1, p2) * PMF63.norm, prevfloat(1.0))
 end
 
 rand(rng::MRG63k3a, ::Type{Float64}) = rand(rng)
+
+# The sampler forms. Without them `rand(rng, n)` and `rand!` went through
+# `(1 + u) - 1`, which returns 0.0 for every u below 2^-53 and 1.0 for every u
+# above 1 - 2^-53, and Float32 and Float16 through the standard library's
+# mantissa construction, which can return 0.
+rand(rng::MRG63k3a, ::Random.SamplerTrivial{Random.CloseOpen01_64}) = rand(rng)
+rand(rng::MRG63k3a, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) = _u01(Float32, rand(rng))
+rand(rng::MRG63k3a, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) = _u01(Float16, rand(rng))
 
 """
 Hook required by Random's generic machinery for Float64-native generators:

@@ -120,22 +120,27 @@ rand(rng::CBRNG, ::Random.SamplerType{UInt32}) = _next32(rng)
 rand(rng::CBRNG, ::Random.SamplerType{UInt64}) = next(rng)
 
 """
-Return a random Float64 in [0, 1).
+Return a random Float64 in (0, 1): the top 52 bits of the 64-bit output, as an
+odd multiple of 2^-53.
 """
-rand(rng::CBRNG) = Random.rand(rng, Random.CloseOpen01(Float64))
+rand(rng::CBRNG) = _u01(Float64, next(rng))
+
+# the sampler form, so that `rand(rng, Float64)` and arrays agree with it; the
+# block-wise `rand!` below applies the same conversion
+rand(rng::CBRNG, ::Random.SamplerTrivial{Random.CloseOpen01_64}) = rand(rng)
 
 """
-Generates a `Float32` in [0, 1) from any counter-based generator: the top 24
-bits of the draw `rand(rng, UInt32)` would return, scaled by 2^-24. A family
-with 32-bit words therefore spends one word per `Float32`, not the two a
-`Float64` takes.
+Generates a `Float32` in (0, 1) from any counter-based generator: the top 23
+bits of the draw `rand(rng, UInt32)` would return, as an odd multiple of 2^-24.
+A family with 32-bit words therefore spends one word per `Float32`, not the two
+a `Float64` takes.
 """
 rand(rng::CBRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) =
     _u01(Float32, _next32(rng))
 
 """
-Generates a `Float16` in [0, 1) from any counter-based generator: the top 11
-bits of the draw `rand(rng, UInt32)` would return, scaled by 2^-11.
+Generates a `Float16` in (0, 1) from any counter-based generator: the top 10
+bits of the draw `rand(rng, UInt32)` would return, as an odd multiple of 2^-11.
 """
 rand(rng::CBRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) =
     _u01(Float16, _next32(rng))
@@ -254,8 +259,7 @@ end
 
 # The conversion the scalar Float64 path applies to a raw 64-bit output; kept
 # identical so that `rand!` and repeated `rand` agree bit for bit.
-@inline _close_open01(u::UInt64) =
-    reinterpret(Float64, 0x3ff0000000000000 | (u & 0x000fffffffffffff)) - 1.0
+@inline _open01(u::UInt64) = _u01(Float64, u)
 
 Random.rand!(rng::CBRNG{B,W,N,K}, A::Array{W}, ::Random.SamplerType{W}) where {B,W,N,K} =
     _fill_words!(rng, A)
@@ -265,7 +269,7 @@ Random.rand!(rng::CBRNG{B,UInt32,N,K}, A::Array{UInt64}, ::Random.SamplerType{UI
 
 Random.rand!(rng::CBRNG, A::Array{Float64},
              ::Random.SamplerTrivial{Random.CloseOpen01{Float64}}) =
-    _fill_u64!(_close_open01, rng, A)
+    _fill_u64!(_open01, rng, A)
 
 # Streams and substreams -------------------------------------------------------
 # A stream is a key; a substream is a slice of the counter space of that key.

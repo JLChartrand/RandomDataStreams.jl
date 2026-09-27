@@ -71,7 +71,7 @@ using RandomDataStreams
 gen = MRG32k3aGen()          # stream generator (manages non-overlapping seeds)
 rng = next_stream!(gen)       # a fresh, independent stream
 
-rand(rng)                    # Float64 in [0, 1)
+rand(rng)                    # Float64 in (0, 1)
 rand(rng, UInt64)            # raw 64-bit unsigned integer
 rand(rng, Int32)
 rand(rng, 1:10)              # random number in 1:10
@@ -103,7 +103,7 @@ using RandomDataStreams
 gen = PhiloxGen()            # Philox4x32-10
 rng = next_stream!(gen)
 
-rand(rng)                    # Float64 in [0, 1)
+rand(rng)                    # Float64 in (0, 1)
 rand(rng, UInt32)            # one 32-bit word of the current block
 rand(rng, UInt64)            # raw 64-bit unsigned integer
 
@@ -119,7 +119,7 @@ using RandomDataStreams
 gen = Threefry4x64Gen()      # Threefry4x64-20, recommended on CPUs
 rng = next_stream!(gen)
 
-rand(rng)                    # Float64 in [0, 1)
+rand(rng)                    # Float64 in (0, 1)
 rand(rng, UInt64)            # raw 64-bit unsigned integer
 ```
 
@@ -131,7 +131,7 @@ using RandomDataStreams
 gen = Xoshiro256plusGen([0x01, 0x02, 0x03, 0x04])
 rng = next_stream!(gen)
 
-rand(rng)                    # Float64 in [0, 1)
+rand(rng)                    # Float64 in (0, 1)
 rand(rng, 1:100)             # uniformly distributed Int64 in the range
 ```
 

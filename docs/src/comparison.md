@@ -30,7 +30,7 @@ alone — see [Streams & Substreams](streams.md).
 |---|---|---|---|---|---|---|
 | State (bits) | 192 (6 × Int64) | 384 (6 × Int64) | 128 | 128 | 256 | 512 |
 | Period | ≈ 2^191 | ≈ 2^377 | 2^128 | 2^128 − 1 | 2^256 − 1 | 2^512 − 1 |
-| Native output | `Float64` [0,1), ~32-bit resolution | `Float64` (0,1), ~63-bit resolution | `UInt64` | `UInt64` | `UInt64` | `UInt64` |
+| Native output | `Float64` (0,1), ~32-bit resolution | `Float64` (0,1), ~63-bit resolution | `UInt64` | `UInt64` | `UInt64` | `UInt64` |
 | `Float64` throughput | 236 M/s | 196 M/s | 504 M/s (DXSM 561) | ≈ 599–697 M/s | ≈ 688–788 M/s | ≈ 523–570 M/s |
 | `UInt64` throughput | 47 M/s (4 steps) | 93 M/s (2 steps) | 599 M/s (DXSM 743) | ≈ 818–941 M/s | ≈ 1032–1242 M/s | ≈ 725–798 M/s |
 | Stream mechanism | matrix power A^2^127 on the seed | matrix power A^2^250 on the seed | closed-form LCG jump (2^32(2^64+1)+1) | `long_jump!` polynomial (2^96) | `long_jump!` (2^192) | `long_jump!` (2^384) |
