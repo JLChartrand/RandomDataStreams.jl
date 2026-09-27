@@ -266,9 +266,9 @@ floating-point draw of a counter-based generator applies, scalar or array.
 Exposed so that a kernel producing raw words -- the package's CUDA extension, or
 one of your own built on [`philox4x32_10`](@ref) -- matches the CPU bit for bit.
 A `UInt64` word gives a `Float64` from its top 52 bits, a `UInt32` word a
-`Float32` from its top 23, each as an odd multiple of `2^-53` (`2^-24`). Only
-shifts, an integer-to-float conversion that is exact, and a multiplication by a
-power of two are involved, so every IEEE 754 device computes the same value.
+`Float32` from its top 23, each as an odd multiple of `2^-53` (`2^-24`). The one
+floating-point operation is a subtraction whose exact result is representable,
+so every IEEE 754 device computes the same value.
 """
 @inline open01(u::UInt64) = _u01(Float64, u)
 @inline open01(u::UInt32) = _u01(Float32, u)
@@ -319,10 +319,18 @@ end
     return bijection(Val(B), _ctr_words(W, Val(N), hi + UInt64(carry), lo2), key)
 end
 
+# Word `j` (0-based, known only at run time) of a block. A chain of selects
+# rather than an index: indexing a tuple with a run-time value makes a GPU
+# kernel spill the block to local memory, which cost a quarter of its fill rate.
+@inline _pick(t::NTuple{N}, j) where {N} = _pick(t, j, Val(N))
+@inline _pick(t::Tuple, j, ::Val{1}) = @inbounds t[1]
+@inline _pick(t::Tuple, j, ::Val{M}) where {M} =
+    ifelse(j == M - 1, (@inbounds t[M]), _pick(t, j, Val(M - 1)))
+
 # Word `g` (0-based) counted from the start of the block (hi, lo).
 @inline function _word_at(::Type{G}, key, hi::UInt64, lo::UInt64, g::UInt64) where {B,W,N,K,G<:CBRNG{B,W,N,K}}
     b, j = divrem(g, UInt64(N))
-    return @inbounds _block_at(G, key, hi, lo, b)[j + 1]
+    return _pick(_block_at(G, key, hi, lo, b), j)
 end
 
 @inline _word32(w::UInt32) = w
@@ -338,21 +346,33 @@ exactly what the stream object at that position returns on its `k+1`-th call to
 """
 @inline _draw_at(::Type{T}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
         {T<:Union{Float16,Float32},G<:CBRNG} =
-    _u01(T, _word32(_word_at(G, key, hi, lo, UInt64(w0 + k))))
+    _u01(T, _word32(_word_at(G, key, hi, lo, (w0 + k) % UInt64)))
 
 @inline _draw_at(::Type{Float64}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
         {B,N,K,G<:CBRNG{B,UInt64,N,K}} =
-    open01(_word_at(G, key, hi, lo, UInt64(w0 + k)))
+    open01(_word_at(G, key, hi, lo, (w0 + k) % UInt64))
 
-@inline function _draw_at(::Type{Float64}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
-        {B,N,K,G<:CBRNG{B,UInt32,N,K}}
-    b, j = divrem(UInt64(w0 + 2k), UInt64(N))
+@inline _draw_at(::Type{Float64}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
+        {B,N,K,G<:CBRNG{B,UInt32,N,K}} =
+    _draw_at(Float64, G, key, hi, lo, w0, k, Val(true))
+
+# A Float64 of a 32-bit family is a pair of words, which straddles two blocks
+# only when the draws start on an odd word. `Val(false)` promises they do not,
+# so that a kernel carries no code for the second block: the code alone, never
+# executed, cost a fifth of the fill rate.
+@inline function _draw_at(::Type{Float64}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int,
+                          ::Val{S}) where {B,N,K,G<:CBRNG{B,UInt32,N,K},S}
+    b, j = divrem((w0 + 2k) % UInt64, UInt64(N))
     blk = _block_at(G, key, hi, lo, b)
-    wlo = @inbounds blk[j + 1]
-    # the pair straddles two blocks only when the draws started on an odd word
-    whi = j + 1 < N ? (@inbounds blk[j + 2]) : _block_at(G, key, hi, lo, b + 1)[1]
+    wlo = _pick(blk, j)
+    whi = S && j + 1 == N ? _block_at(G, key, hi, lo, b + UInt64(1))[1] : _pick(blk, j + UInt64(1))
     return open01((UInt64(whi) << 32) | UInt64(wlo))
 end
+
+# every other draw takes a single word and never straddles: the flag is moot
+@inline _draw_at(::Type{T}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int, ::Val) where
+        {T,G<:CBRNG} =
+    _draw_at(T, G, key, hi, lo, w0, k)
 
 """
     _draw_position(rng::CBRNG) -> (hi, lo, w0)

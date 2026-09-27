@@ -1376,8 +1376,10 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
                     for n in (1, 2, 3, 5, 8, 13)
                         a, b = copy(rng), copy(rng)
                         hi, lo, w0 = R._draw_position(a)
-                        @test [R._draw_at(T, G, a.key, hi, lo, w0, k) for k in 0:n-1] ==
-                              [rand(b, T) for _ in 1:n]
+                        expected = [rand(b, T) for _ in 1:n]
+                        @test [R._draw_at(T, G, a.key, hi, lo, w0, k) for k in 0:n-1] == expected
+                        # the kernel's specialisation: Val(false) when no pair can straddle
+                        @test [R._draw_at(T, G, a.key, hi, lo, w0, k, Val(isodd(w0))) for k in 0:n-1] == expected
                         R._skip_draws!(a, T, n)
                         @test get_state(a)[1] == get_state(b)[1]
                         @test get_state(a)[4] == get_state(b)[4]

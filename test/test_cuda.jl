@@ -67,7 +67,7 @@ else
         ref = rand!(copy(rng), Vector{Float64}(undef, n))
         for t in (32, 96, 256, 1024)
             A = CUDA.zeros(Float64, n)
-            @cuda threads = t blocks = cld(n, t) ext._fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n)
+            @cuda threads = t blocks = cld(n, t) ext._fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n, Val(isodd(w0)))
             @test Array(A) == ref
         end
     end
@@ -395,8 +395,8 @@ end
 end
 
 @testset "open01 computes the same value on the device" begin
-    # The conversion is shifts, an exact integer-to-float conversion and a
-    # multiplication by a power of two, so IEEE 754 fixes every bit of it.
+    # The conversion's one floating-point operation is a subtraction whose
+    # exact result is representable, so IEEE 754 fixes every bit of it.
     function _open01_kernel!(out, words)
         i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
         i <= length(out) && (@inbounds out[i] = open01(words[i]))

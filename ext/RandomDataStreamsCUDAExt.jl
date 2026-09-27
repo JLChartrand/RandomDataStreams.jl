@@ -14,8 +14,8 @@
 #     Element k is `RandomDataStreams._draw_at(T, G, key, hi, lo, w0, k)`, the
 #     pure function the CPU test suite checks against the stream object: the
 #     same words in the same order, through the same `open01` conversion, whose
-#     arithmetic (shifts, an exact integer-to-float conversion, a multiplication
-#     by a power of two) rounds identically on any IEEE 754 device. A Float64
+#     one floating-point operation -- a subtraction with a representable exact
+#     result -- gives the same bits on any IEEE 754 device. A Float64
 #     takes two words of a 32-bit family and one of a 64-bit family; a Float32
 #     or Float16 takes one word of either. One thread per element.
 #
@@ -80,10 +80,11 @@ end
 
 # Element k of a uniform fill: one thread per element, each computing the block
 # its word(s) come from. Every draw is independent of the launch configuration.
-function _fill_kernel!(A, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int) where {G}
+# `straddle` is `Val(isodd(w0))`: see `_draw_at` for why it is a type parameter.
+function _fill_kernel!(A, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int, straddle::Val) where {G}
     k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
     if 0 <= k < n
-        @inbounds A[k + 1] = RandomDataStreams._draw_at(eltype(A), G, key, hi, lo, w0, k)
+        @inbounds A[k + 1] = RandomDataStreams._draw_at(eltype(A), G, key, hi, lo, w0, k, straddle)
     end
     return nothing
 end
@@ -228,7 +229,11 @@ function Random.rand!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32
 
     threads = 256
     blocks = cld(n, threads)
-    @cuda threads = threads blocks = blocks _fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n)
+    if isodd(w0)
+        @cuda threads = threads blocks = blocks _fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n, Val(true))
+    else
+        @cuda threads = threads blocks = blocks _fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n, Val(false))
+    end
     RandomDataStreams._skip_draws!(rng, T, n)
     return A
 end
