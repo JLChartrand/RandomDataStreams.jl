@@ -1261,6 +1261,70 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "Float32 and Float16 stay below 1" begin
+        # These were `Float32(rand(rng))`, which rounds every Float64 draw above
+        # 1 - 2^-25 up to 1.0f0 (above 1 - 2^-12 for Float16). They were also
+        # defined on `::Type` only, so `rand(rng, Float32, n)` bypassed them and
+        # took the low 23 bits of the word instead: scalar and array draws
+        # disagreed. Both paths are now one sampler method on the top bits.
+        R = RandomDataStreams
+        for T in (Float32, Float16)
+            @test R._u01(T, typemax(UInt64)) == prevfloat(one(T))
+            @test R._u01(T, typemax(UInt32)) == prevfloat(one(T))
+            @test R._u01(T, UInt64(0)) == zero(T)
+            @test R._u01(T, UInt32(0)) == zero(T)
+        end
+
+        # xoshiro256+ returns s[1] + s[4], so this state's next output is
+        # typemax(UInt64), which the old conversion turned into exactly 1.0f0
+        x = Xoshiro256p(UInt64[typemax(UInt64), 1, 1, 0])
+        @test rand(copy(x), Float32) == prevfloat(1f0)
+        @test rand(copy(x), Float16) == prevfloat(Float16(1))
+
+        # every word-based family: scalar, array and rand! agree, and the value
+        # is the documented function of the raw draw -- the 64-bit output for
+        # xoshiro and PCG, the 32-bit draw for the counter-based families
+        variants = [
+            ("Xoroshiro128p",   () -> next_stream!(R.Xoroshiro128pGen(12345)),  UInt64),
+            ("Xoroshiro128ss",  () -> next_stream!(R.Xoroshiro128ssGen(12345)), UInt64),
+            ("Xoroshiro128pp",  () -> next_stream!(R.Xoroshiro128ppGen(12345)), UInt64),
+            ("Xoshiro256p",     () -> next_stream!(Xoshiro256plusGen(12345)),   UInt64),
+            ("Xoshiro256ss",    () -> next_stream!(R.Xoshiro256ssGen(12345)),   UInt64),
+            ("Xoshiro256pp",    () -> next_stream!(R.Xoshiro256ppGen(12345)),   UInt64),
+            ("Xoshiro512p",     () -> next_stream!(R.Xoshiro512pGen(12345)),    UInt64),
+            ("Xoshiro512ss",    () -> next_stream!(R.Xoshiro512ssGen(12345)),   UInt64),
+            ("Xoshiro512pp",    () -> next_stream!(R.Xoshiro512ppGen(12345)),   UInt64),
+            ("PCG64",           () -> next_stream!(PCG64Gen(12345)),            UInt64),
+            ("PCG64DXSM",       () -> next_stream!(PCG64DXSMGen(12345)),        UInt64),
+            ("Philox4x32-10",   () -> next_stream!(PhiloxGen(12345)),           UInt32),
+            ("Philox4x64-10",   () -> next_stream!(Philox4x64Gen(12345)),       UInt32),
+            ("Threefry4x32-20", () -> next_stream!(Threefry4x32Gen(12345)),     UInt32),
+            ("Threefry4x64-20", () -> next_stream!(Threefry4x64Gen(12345)),     UInt32),
+        ]
+        for (name, mk, U) in variants
+            @testset "$name" begin
+                for T in (Float32, Float16)
+                    a, b, c, d = mk(), mk(), mk(), mk()
+                    s = [rand(a, T) for _ in 1:9]
+                    @test rand(b, T, 9) == s
+                    v = Vector{T}(undef, 9)
+                    rand!(c, v)
+                    @test v == s
+                    @test s == [R._u01(T, rand(d, U)) for _ in 1:9]
+                    @test all(0 .<= s .< 1)
+                end
+            end
+        end
+
+        # the MRG families go through the standard library's construction,
+        # which was never affected; the scalar and array paths agree there too
+        for M in (MRG32k3aGen, MRG63k3aGen), T in (Float32, Float16)
+            a, b = next_stream!(M()), next_stream!(M())
+            @test rand(b, T, 9) == [rand(a, T) for _ in 1:9]
+        end
+    end
+
+
     @testset "stateless addressing matches the stream object" begin
         # A counter-based draw must be recomputable from (key, substream,
         # index) alone, with no stream object: that identity is what lets a

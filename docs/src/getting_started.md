@@ -103,7 +103,8 @@ flags rather than cryptography.
 
 ### Xoshiro256p
 
-- `Float64` (native path), `Float32`, `Float16`
+- `Float64` (native path), `Float32`, `Float16` — the last two from the top 24
+  and 11 bits of one output, so both stay strictly below 1
 - `UInt64`
 - Ranges: `rand(rng, 1:10)` works through the standard `Random` machinery
 

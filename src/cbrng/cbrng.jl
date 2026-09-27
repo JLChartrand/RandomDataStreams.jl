@@ -125,14 +125,20 @@ Return a random Float64 in [0, 1).
 rand(rng::CBRNG) = Random.rand(rng, Random.CloseOpen01(Float64))
 
 """
-Generates a `Float32` from any counter-based generator.
+Generates a `Float32` in [0, 1) from any counter-based generator: the top 24
+bits of the draw `rand(rng, UInt32)` would return, scaled by 2^-24. A family
+with 32-bit words therefore spends one word per `Float32`, not the two a
+`Float64` takes.
 """
-rand(rng::CBRNG, ::Type{Float32}) = Float32(rand(rng))
+rand(rng::CBRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) =
+    _u01(Float32, _next32(rng))
 
 """
-Generates a `Float16` from any counter-based generator.
+Generates a `Float16` in [0, 1) from any counter-based generator: the top 11
+bits of the draw `rand(rng, UInt32)` would return, scaled by 2^-11.
 """
-rand(rng::CBRNG, ::Type{Float16}) = Float16(rand(rng))
+rand(rng::CBRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) =
+    _u01(Float16, _next32(rng))
 
 # Full Random-API coverage for integer and character types, mirroring the
 # derivation used for the xoshiro families.

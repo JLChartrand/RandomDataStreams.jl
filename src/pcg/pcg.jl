@@ -271,14 +271,18 @@ rand(rng::PCGRNG) =
     reinterpret(Float64, 0x3ff0000000000000 | (next(rng) & 0x000fffffffffffff)) - 1.0
 
 """
-Generates a `Float32` from a PCG generator.
+Generates a `Float32` in [0, 1) from a PCG generator: the top 24 bits of one
+output, scaled by 2^-24.
 """
-rand(rng::PCGRNG, ::Type{Float32}) = Float32(rand(rng))
+rand(rng::PCGRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) =
+    _u01(Float32, next(rng))
 
 """
-Generates a `Float16` from a PCG generator.
+Generates a `Float16` in [0, 1) from a PCG generator: the top 11 bits of one
+output, scaled by 2^-11.
 """
-rand(rng::PCGRNG, ::Type{Float16}) = Float16(rand(rng))
+rand(rng::PCGRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) =
+    _u01(Float16, next(rng))
 
 # Ranges are left to `Random`: the sampler it builds from the `SamplerType`
 # methods below rejects instead of folding with `%`, so it is unbiased and it

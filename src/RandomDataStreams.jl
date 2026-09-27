@@ -19,6 +19,7 @@ export srand, short_jump, long_jump, next_stream
 
 ###mrg32k3a
 include("abstract.jl")
+include("floats.jl")
 include("mrg32k3a/main.jl")
 
 ###mrg63k3a, the 64-bit-arithmetic member of the same family (L'Ecuyer 1999)
