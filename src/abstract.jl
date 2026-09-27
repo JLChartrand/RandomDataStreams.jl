@@ -68,22 +68,23 @@ threads read the same seed and hand out streams that overlap. The failure is
 silent — the result is not an error but a set of correlated streams, which is
 exactly the guarantee the package exists to provide.
 
-Call this once, from one thread, and give each worker its own element:
+Call this once, from one thread, and give each replication its own element:
 
 ```julia
 using Base.Threads
 
 gen  = MRG32k3aGen()
-rngs = next_stream!(gen, nthreads())     # serial, here
+rngs = next_stream!(gen, nrep)           # serial, here
 
-@threads for t in 1:nthreads()
-    r = rngs[t]                          # each thread owns one stream
+@threads for r in 1:nrep
+    rng = rngs[r]                        # replication r owns stream r
     ...
 end
 ```
 
 Streams themselves carry no shared state, so drawing from different streams on
-different threads needs no synchronisation.
+different threads needs no synchronisation. Indexing them by replication rather
+than by thread makes the results independent of the number of threads.
 """
 function next_stream!(gen::AbstractRNGStream, n::Integer)
     n >= 0 || throw(ArgumentError("n must be non-negative, got $n"))

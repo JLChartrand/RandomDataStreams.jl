@@ -38,7 +38,8 @@ closed-form LCG jump instead. The [FAQ](docs/src/faq.md) explains why.
 - **Multiple independent streams**: obtain guaranteed non-overlapping sequences
   with `next_stream!(gen)` — ideal for parallel workers or replicated experiments.
 - **Ready for threads**: `next_stream!(gen, n)` hands out `n` streams at once;
-  streams share no state, so one per thread needs no synchronisation.
+  streams share no state, so one per replication needs no synchronisation, and
+  the results do not depend on the number of threads.
 - **Substreams** within each stream (`reset_substream!`, `next_substream!`),
   enabling common random numbers across scenarios — for *every* generator.
 - **Full state control**: save/restore a generator with `get_state`,
@@ -149,26 +150,28 @@ reset_stream!(rng1)          # back to the very beginning of the stream
 @assert rand(rng1) == u0
 ```
 
-### One stream per thread
+### One stream per replication, on any number of threads
 
 ```julia
 using RandomDataStreams, Base.Threads
 
+nrep = 100
 gen  = MRG32k3aGen()
-rngs = next_stream!(gen, nthreads())   # take the streams serially, first
+rngs = next_stream!(gen, nrep)         # take the streams serially, first
 
-totals = Vector{Float64}(undef, nthreads())
-@threads for t in 1:nthreads()
-    rng = rngs[t]                      # each thread owns one stream
-    totals[t] = sum(rand(rng) for _ in 1:10^4)
+totals = Vector{Float64}(undef, nrep)
+@threads for r in 1:nrep
+    rng = rngs[r]                      # replication r owns stream r
+    totals[r] = sum(rand(rng) for _ in 1:10^4)
 end
 ```
 
 Streams share no state, so this needs no synchronisation and gives exactly what
-the same streams give drawn one after another. Do **not** call `next_stream!`
-on a shared generator object inside the loop: the generator rewrites the seed
-of the next stream on every call, and concurrent calls hand out overlapping
-streams without reporting it.
+the same streams give drawn one after another. Because the streams are indexed
+by replication rather than by thread, `totals` is the same on one thread or on
+sixty-four. Do **not** call `next_stream!` on a shared generator object inside
+the loop: the generator rewrites the seed of the next stream on every call, and
+concurrent calls hand out overlapping streams without reporting it.
 
 ### Drop-in use with Julia's standard RNG API
 

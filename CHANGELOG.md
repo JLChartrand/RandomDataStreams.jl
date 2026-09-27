@@ -33,6 +33,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same name as `--battery` restoring the old uniform matrix. `validate.jl`
   stays orthogonal: any battery, any suite.
 
+- **The threading examples take one stream per replication, not per thread.**
+  The README, the FAQ, *Streams & Substreams* and the `next_stream!(gen, n)`
+  docstring allocated `nthreads()` streams, which ties what a replication draws
+  to the number of threads. Indexed by replication, the results are the same on
+  one thread or on sixty-four — the requirement Passerat-Palmbach, Mazel & Hill
+  (2012) set for parallel streams.
+
 ### Added
 
 - **Alphabit and Rabbit**, TestU01's bit-level batteries, which RNGTest never

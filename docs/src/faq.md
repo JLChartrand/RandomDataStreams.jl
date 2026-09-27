@@ -68,9 +68,11 @@ state itself rather than hashed. See
 
 ## How do I run truly parallel simulations?
 
-Take the streams first, then parallelise over them:
-`rngs = next_stream!(gen, nthreads())`. Streams share no state, so one per
-thread needs no synchronisation.
+Take one stream per replication first, then parallelise over the replications:
+`rngs = next_stream!(gen, nrep)`, and replication `r` draws from `rngs[r]`.
+Streams share no state, so this needs no synchronisation, and since the stream
+follows the replication rather than the thread, the results do not change with
+the number of threads.
 
 Never call `next_stream!` on a shared generator object from inside a parallel
 loop. The generator rewrites the seed of the next stream on every call, so

@@ -153,24 +153,38 @@ Xoshiro256+), which is what guarantees non-overlap.
 
 ## Threads
 
-Streams share no state, so one stream per thread needs no synchronisation.
-Take the streams first, then parallelise over them:
+Streams share no state, so drawing from different streams on different threads
+needs no synchronisation. Take one stream per replication first, then
+parallelise over the replications:
 
 ```julia
 using RandomDataStreams, Base.Threads
 
+nrep = 1_000
 gen  = MRG32k3aGen()                    # any generator object
-rngs = next_stream!(gen, nthreads())    # n streams, taken serially
+rngs = next_stream!(gen, nrep)          # one stream per replication, serially
 
-results = Vector{Float64}(undef, nthreads())
-@threads for t in 1:nthreads()
-    rng = rngs[t]                       # this thread owns this stream
-    results[t] = sum(rand(rng) for _ in 1:10^5)
+results = Vector{Float64}(undef, nrep)
+@threads for r in 1:nrep
+    rng = rngs[r]                       # replication r owns stream r
+    results[r] = sum(rand(rng) for _ in 1:10^5)
 end
 ```
 
 The results are those of the same streams drawn one after another, which the
 test suite checks for every family.
+
+Index the streams by the unit of work, not by the thread. Replication `r` then
+draws from stream `r` whatever the number of threads and however the scheduler
+hands out iterations, so `results` is identical with `julia -t 1` and
+`julia -t 64` — the requirement Passerat-Palmbach, Mazel & Hill (2012) state
+for GPU threads, and the one that makes a run reproducible on another machine.
+Taking `nthreads()` streams and splitting the work between them would not have
+this property: a replication's draws would depend on how many threads shared
+the work. Nor should a stream be chosen by `threadid()`, which is not stable
+while a task runs. When replications number in the millions, give each stream a
+fixed-size batch of them: what matters is that the batch, not the thread,
+determines the stream.
 
 !!! warning "Do not call `next_stream!` inside the parallel loop"
 
