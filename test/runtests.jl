@@ -1356,6 +1356,51 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "position-addressed float draws match the stream object" begin
+        # `_draw_at` is what a GPU kernel computes for element k of a fill; it
+        # must reproduce the stream object from any position, for every
+        # counter-based family and float type, and `_skip_draws!` must leave
+        # the object where the draws themselves would. Checked here, on the
+        # CPU, so that CPU-GPU parity does not rest on having a GPU in CI.
+        R = RandomDataStreams
+        starts = (UInt128(0), (UInt128(1) << 64) - UInt128(3),
+                  (UInt128(7) << 64) | 0xfffffffffffffffe, typemax(UInt128) - UInt128(2))
+        for G in (PhiloxRNG, Philox4x64RNG, Threefry4x32RNG, Threefry4x64RNG)
+            @testset "$(R._variant_name(G))" begin
+                for T in (Float64, Float32, Float16), c in starts, pre in 0:5
+                    rng = G(12345)
+                    rng.ctr = c
+                    for _ in 1:pre                     # every offset within a block
+                        rand(rng, UInt32)
+                    end
+                    for n in (1, 2, 3, 5, 8, 13)
+                        a, b = copy(rng), copy(rng)
+                        hi, lo, w0 = R._draw_position(a)
+                        @test [R._draw_at(T, G, a.key, hi, lo, w0, k) for k in 0:n-1] ==
+                              [rand(b, T) for _ in 1:n]
+                        R._skip_draws!(a, T, n)
+                        @test get_state(a)[1] == get_state(b)[1]
+                        @test get_state(a)[4] == get_state(b)[4]
+                        @test rand(a, UInt32) == rand(b, UInt32)
+                    end
+                end
+            end
+        end
+
+        # the (hi, lo) form of the counter words agrees with the UInt128 form
+        for W in (UInt32, UInt64), c in (UInt128(0), typemax(UInt128),
+                                         (UInt128(0x0123456789abcdef) << 64) | 0xfedcba9876543210)
+            @test R._ctr_words(W, Val(4), (c >> 64) % UInt64, c % UInt64) == R._ctr_words(W, Val(4), c)
+        end
+
+        # the exported conversion is the one every CBRNG float draw applies
+        for w in (UInt64(0), typemax(UInt64), 0x0123456789abcdef)
+            @test open01(w) === R._u01(Float64, w)
+            @test open01(w % UInt32) === R._u01(Float32, w % UInt32)
+        end
+    end
+
+
     @testset "stateless addressing matches the stream object" begin
         # A counter-based draw must be recomputable from (key, substream,
         # index) alone, with no stream object: that identity is what lets a

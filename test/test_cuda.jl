@@ -19,61 +19,70 @@ if !CUDA.functional()
     @info "CUDA is not functional on this machine -- skipping GPU tests" CUDA.functional()
 else
 
-@testset "PhiloxRNG CUDA fill" begin
-    key = (UInt32(11), UInt32(22))
+@testset "rand! on the GPU is the CPU fill, bit for bit" begin
+    families = [
+        ("Philox4x32-10",   PhiloxRNG),
+        ("Philox4x64-10",   Philox4x64RNG),
+        ("Threefry4x32-20", Threefry4x32RNG),
+        ("Threefry4x64-20", Threefry4x64RNG),
+    ]
+    for (name, G) in families
+        @testset "$name" begin
+            # `pre` 32-bit draws put the generator at every offset within a
+            # block; odd offsets make a Float64 of a 32-bit family straddle two
+            for T in (Float64, Float32, Float16), pre in 0:4, n in (1, 2, 3, 5, 257, 10_001)
+                start = G(20260927)
+                for _ in 1:pre
+                    rand(start, UInt32)
+                end
+                cpu, gpu = copy(start), copy(start)
+                cpu_out = rand!(cpu, Vector{T}(undef, n))
+                gpu_out = rand!(gpu, CUDA.zeros(T, n))
+                @test Array(gpu_out) == cpu_out
+                # the host object is left exactly where the CPU fill leaves it
+                @test get_state(gpu)[1] == get_state(cpu)[1]      # counter
+                @test get_state(gpu)[4] == get_state(cpu)[4]      # index in block
+                @test rand(gpu, UInt64) == rand(cpu, UInt64)
+            end
 
-    @testset "matches the CPU path bit for bit" begin
-        for n in (1, 2, 3, 100, 10_001)          # 1 and odd n exercise the tail pairing
-            cpu = PhiloxRNG(key)
-            cpu_out = Vector{Float64}(undef, n)
-            rand!(cpu, cpu_out)
+            # across a carry into the high half of the counter, and across the
+            # wrap of the whole 128-bit counter
+            for c in ((UInt128(3) << 64) - UInt128(2), typemax(UInt128) - UInt128(1)), T in (Float64, Float32)
+                cpu = G(11); cpu.ctr = c
+                gpu = copy(cpu)
+                @test Array(rand!(gpu, CUDA.zeros(T, 40))) == rand!(cpu, Vector{T}(undef, 40))
+                @test get_state(gpu)[1] == get_state(cpu)[1]
+            end
+        end
+    end
 
-            gpu = PhiloxRNG(key)
-            gpu_out = CUDA.zeros(Float64, n)
-            rand!(gpu, gpu_out)
-
-            @test Array(gpu_out) == cpu_out
-            # both paths must advance the counter by the same number of blocks
-            @test get_state(gpu)[1] == get_state(cpu)[1]
+    @testset "does not depend on the launch configuration" begin
+        # Each element is computed from (key, counter, index) alone, so the
+        # number of threads per block cannot change a draw.
+        ext = Base.get_extension(RandomDataStreams, :RandomDataStreamsCUDAExt)
+        rng = PhiloxRNG(UInt32[3, 4])
+        rand(rng, UInt32)                                  # start mid-block
+        hi, lo, w0 = RandomDataStreams._draw_position(rng)
+        n = 5_003
+        ref = rand!(copy(rng), Vector{Float64}(undef, n))
+        for t in (32, 96, 256, 1024)
+            A = CUDA.zeros(Float64, n)
+            @cuda threads = t blocks = cld(n, t) ext._fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n)
+            @test Array(A) == ref
         end
     end
 
     @testset "values land in (0, 1)" begin
-        rng = PhiloxRNG(key)
-        out = CUDA.zeros(Float64, 50_000)
-        rand!(rng, out)
-        v = Array(out)
-        @test all(0.0 .< v .< 1.0)
-        @test 0.48 < sum(v) / length(v) < 0.52
-    end
-
-    @testset "continues from where the GPU fill left off" begin
-        rng = PhiloxRNG(key)
-        out = CUDA.zeros(Float64, 20)
-        rand!(rng, out)
-        after_gpu = rand(rng)                     # next scalar draw, on the CPU
-
-        ref = PhiloxRNG(key)
-        ref_out = Vector{Float64}(undef, 20)
-        rand!(ref, ref_out)
-        after_cpu = rand(ref)
-        @test after_gpu == after_cpu
-    end
-
-    @testset "refuses a mid-block generator" begin
-        rng = PhiloxRNG(key)
-        rand(rng)                                 # one scalar draw -> mid-block
-        out = CUDA.zeros(Float64, 10)
-        @test_throws ArgumentError rand!(rng, out)
-
-        reset_substream!(rng)                     # realigned -> works again
-        @test rand!(rng, out) === out
+        for T in (Float64, Float32, Float16)
+            v = Array(rand!(PhiloxRNG((UInt32(11), UInt32(22))), CUDA.zeros(T, 50_000)))
+            @test all(0 .< v .< 1)
+            @test 0.48 < sum(Float64.(v)) / length(v) < 0.52
+        end
     end
 
     @testset "empty array is a no-op" begin
-        rng = PhiloxRNG(key)
-        out = CUDA.zeros(Float64, 0)
-        rand!(rng, out)
+        rng = PhiloxRNG((UInt32(11), UInt32(22)))
+        rand!(rng, CUDA.zeros(Float64, 0))
         @test get_state(rng)[1] == 0
     end
 end
@@ -258,6 +267,7 @@ end
     fills = [
         ("rand! Float64",             Float64, rand!),
         ("rand! Float32",             Float32, rand!),
+        ("rand! Float16",             Float16, rand!),
         ("randn! Float64",            Float64, randn!),
         ("randn! Float32",            Float32, randn!),
         ("randn_inversion! Float64",  Float64, randn_inversion!),
@@ -317,56 +327,6 @@ end
         rng = PhiloxRNG(key)
         out = CUDA.zeros(Float64, 0)
         randn_polar!(rng, out)
-        @test get_state(rng)[1] == 0
-    end
-end
-
-@testset "PhiloxRNG CUDA fill (Float32, native word-per-output)" begin
-    key = (UInt32(55), UInt32(66))
-
-    @testset "matches a direct block computation, four outputs per block" begin
-        for n in (1, 3, 4, 5, 1000, 4001)         # exercise every within-block offset
-            rng = PhiloxRNG(key)
-            out = CUDA.zeros(Float32, n)
-            rand!(rng, out)
-            v = Array(out)
-
-            expected = Float32[]
-            b = 0
-            while length(expected) < n
-                ctr = philox4x32_counter(UInt64(0), UInt64(b))
-                blk = RandomDataStreams.philox(ctr, key, Val(10))
-                append!(expected, open01.(blk))
-                b += 1
-            end
-            @test v == expected[1:n]
-            @test get_state(rng)[1] == cld(n, 4)
-        end
-    end
-
-    @testset "values land in (0, 1)" begin
-        rng = PhiloxRNG(key)
-        out = CUDA.zeros(Float32, 50_000)
-        rand!(rng, out)
-        v = Array(out)
-        @test all(0.0f0 .< v .< 1.0f0)
-        @test 0.48 < sum(v) / length(v) < 0.52
-    end
-
-    @testset "refuses a mid-block generator" begin
-        rng = PhiloxRNG(key)
-        rand(rng)
-        out = CUDA.zeros(Float32, 10)
-        @test_throws ArgumentError rand!(rng, out)
-
-        reset_substream!(rng)
-        @test rand!(rng, out) === out
-    end
-
-    @testset "empty array is a no-op" begin
-        rng = PhiloxRNG(key)
-        out = CUDA.zeros(Float32, 0)
-        rand!(rng, out)
         @test get_state(rng)[1] == 0
     end
 end
@@ -432,6 +392,22 @@ end
     expected = [RandomDataStreams.philox(philox4x32_counter(UInt64(i - 1), UInt64(0)), key, Val(10))[1]
                 for i in 1:n]
     @test Array(out) == expected
+end
+
+@testset "open01 computes the same value on the device" begin
+    # The conversion is shifts, an exact integer-to-float conversion and a
+    # multiplication by a power of two, so IEEE 754 fixes every bit of it.
+    function _open01_kernel!(out, words)
+        i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+        i <= length(out) && (@inbounds out[i] = open01(words[i]))
+        return nothing
+    end
+    for W in (UInt32, UInt64)
+        words = vcat(W[0, 1, typemax(W), typemax(W) - 1, typemax(W) >> 1], rand(PhiloxRNG(UInt32[1, 2]), W, 10_000))
+        out = CUDA.zeros(W === UInt32 ? Float32 : Float64, length(words))
+        @cuda threads = 256 blocks = cld(length(words), 256) _open01_kernel!(out, CuArray(words))
+        @test Array(out) == open01.(words)
+    end
 end
 
 end # CUDA.functional()

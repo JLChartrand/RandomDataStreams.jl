@@ -283,6 +283,108 @@ Random.rand!(rng::CBRNG, A::Array{Float64},
              ::Random.SamplerTrivial{Random.CloseOpen01{Float64}}) =
     _fill_u64!(open01, rng, A)
 
+# Draws addressed by position ----------------------------------------------------
+#
+# The k-th floating-point draw from a given position, as a pure function of the
+# key, the block counter and k: the same words, in the same order, through the
+# same `open01` as the stream object. A GPU kernel fills element k of an array
+# this way, one thread per element, which is what makes a device fill agree with
+# the CPU bit for bit from any starting position. The test suite checks these
+# functions against the stream object on the CPU, so the agreement does not rest
+# on having a GPU to test with.
+#
+# The counter travels as two 64-bit halves: not every GPU backend lowers 128-bit
+# integer arithmetic, and an add with carry is all that is needed.
+
+# Words per draw: a Float64 takes 64 bits -- two 32-bit words, low first, as
+# `next` pairs them, or one 64-bit word; a narrower float takes the 32-bit draw
+# `_next32` returns, one word of either width.
+@inline _words_per_draw(::Type{Float64}, ::Type{UInt32}) = 2
+@inline _words_per_draw(::Type{Float64}, ::Type{UInt64}) = 1
+@inline _words_per_draw(::Type{<:Union{Float16,Float32}}, ::Type{W}) where {W} = 1
+
+# `_ctr_words` for a counter given as (hi, lo): word i holds bits
+# (i-1)*w ... i*w-1 of the 128-bit counter, and nothing beyond bit 127.
+@inline function _ctr_words(::Type{W}, ::Val{N}, hi::UInt64, lo::UInt64) where {W,N}
+    return ntuple(Val(N)) do i
+        s = (i - 1) * 8 * sizeof(W)
+        s < 64 ? (lo >> s) % W : s < 128 ? (hi >> (s - 64)) % W : zero(W)
+    end
+end
+
+# Block `b` past the block (hi, lo).
+@inline function _block_at(::Type{<:CBRNG{B,W,N,K}}, key::NTuple{K,W},
+                           hi::UInt64, lo::UInt64, b::UInt64) where {B,W,N,K}
+    lo2, carry = Base.add_with_overflow(lo, b)
+    return bijection(Val(B), _ctr_words(W, Val(N), hi + UInt64(carry), lo2), key)
+end
+
+# Word `g` (0-based) counted from the start of the block (hi, lo).
+@inline function _word_at(::Type{G}, key, hi::UInt64, lo::UInt64, g::UInt64) where {B,W,N,K,G<:CBRNG{B,W,N,K}}
+    b, j = divrem(g, UInt64(N))
+    return @inbounds _block_at(G, key, hi, lo, b)[j + 1]
+end
+
+@inline _word32(w::UInt32) = w
+@inline _word32(w::UInt64) = w % UInt32
+
+"""
+    _draw_at(T, G, key, hi, lo, w0, k) -> T
+
+The `k`-th draw of type `T` (0-based) from the position whose next word is word
+`w0` of the block `(hi, lo)`, for a generator of type `G` keyed with `key`:
+exactly what the stream object at that position returns on its `k+1`-th call to
+`rand(rng, T)`.
+"""
+@inline _draw_at(::Type{T}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
+        {T<:Union{Float16,Float32},G<:CBRNG} =
+    _u01(T, _word32(_word_at(G, key, hi, lo, UInt64(w0 + k))))
+
+@inline _draw_at(::Type{Float64}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
+        {B,N,K,G<:CBRNG{B,UInt64,N,K}} =
+    open01(_word_at(G, key, hi, lo, UInt64(w0 + k)))
+
+@inline function _draw_at(::Type{Float64}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int) where
+        {B,N,K,G<:CBRNG{B,UInt32,N,K}}
+    b, j = divrem(UInt64(w0 + 2k), UInt64(N))
+    blk = _block_at(G, key, hi, lo, b)
+    wlo = @inbounds blk[j + 1]
+    # the pair straddles two blocks only when the draws started on an odd word
+    whi = j + 1 < N ? (@inbounds blk[j + 2]) : _block_at(G, key, hi, lo, b + 1)[1]
+    return open01((UInt64(whi) << 32) | UInt64(wlo))
+end
+
+"""
+    _draw_position(rng::CBRNG) -> (hi, lo, w0)
+
+Where the next draw of `rng` starts: the block holding its next word, as two
+64-bit halves, and the offset of that word in the block.
+"""
+@inline function _draw_position(rng::CBRNG{B,W,N,K}) where {B,W,N,K}
+    blk = rng.idx > N ? rng.ctr : (rng.ctr - UInt128(1)) & _ctr_mask(W, Val(N))
+    return (blk >> 64) % UInt64, blk % UInt64, rng.idx > N ? 0 : rng.idx - 1
+end
+
+"""
+    _skip_draws!(rng::CBRNG, T, n) -> rng
+
+Leave `rng` exactly where `n` calls to `rand(rng, T)` would: counter, buffered
+block and index. What a device fill does to the host object after the kernel
+has computed the draws with [`_draw_at`](@ref).
+"""
+function _skip_draws!(rng::CBRNG{B,W,N,K}, ::Type{T}, n::Integer) where {B,W,N,K,T}
+    n == 0 && return rng
+    hi, lo, w0 = _draw_position(rng)
+    last = UInt128(w0) + UInt128(n) * UInt128(_words_per_draw(T, W)) - UInt128(1)
+    b, j = divrem(last, UInt128(N))
+    blk = ((UInt128(hi) << 64) | UInt128(lo)) + b
+    blk &= _ctr_mask(W, Val(N))
+    rng.buffer = bijection(Val(B), _ctr_words(W, Val(N), blk), rng.key)
+    rng.ctr = (blk + UInt128(1)) & _ctr_mask(W, Val(N))
+    rng.idx = Int(j) + 2
+    return rng
+end
+
 # Streams and substreams -------------------------------------------------------
 # A stream is a key; a substream is a slice of the counter space of that key.
 

@@ -5,35 +5,36 @@
 # sections of Project.toml), so a CPU-only user never pulls in a CUDA
 # dependency.
 #
-# Two capabilities live here, both keyed on the same idea: one Philox4x32
-# block (four 32-bit words) is independent per-block work with no shared
-# state, so a kernel gives each block to one thread and writes straight into
-# the output array, then the counter is advanced on the host by the number of
-# blocks consumed -- exactly as the CPU `_fill_u64!` path does.
+# Two capabilities live here.
 #
-#   * `rand!` into a `CuArray{Float64}` -- a block's two word-pairs are two
-#     independent Float64 uniforms, matching what two consecutive scalar
-#     `rand(rng)` calls would produce.
-#   * `randn!` into a `CuArray{Float64}` -- the same two uniforms, fed through
-#     Box-Muller instead of kept separate, giving two independent standard
-#     normals. Box-Muller (not the Ziggurat algorithm the CPU `randn` uses) is
-#     the fit for a GPU kernel: it consumes exactly two uniforms and produces
-#     exactly two normals every time, with no rejection loop and so no warp
-#     divergence. Its output does not, and is not meant to, match CPU `randn`
-#     bit for bit -- the algorithms differ.
-#   * `rand!`/`randn!` into a `CuArray{Float32}` -- Philox4x32-10 is natively
-#     32 bits per word, so a Float32 output needs only one word, not a pair:
-#     one block gives 4 uniforms (against 2 for Float64) and, through
-#     Box-Muller, 4 normals (against 2). Double the useful output per block,
-#     which is where the throughput is on a memory-bound fill kernel, and
-#     doubly so on a consumer GPU where FP64 arithmetic is throttled well
-#     below FP32. The CPU's `rand(rng, Float32)` takes one word per draw
-#     through the same `open01`, so the two agree bit for bit.
+#   * `rand!` into a `CuArray{Float64}`, `CuArray{Float32}` or `CuArray{Float16}`
+#     for every counter-based generator -- Philox4x32, Philox4x64, Threefry4x32,
+#     Threefry4x64 -- bit for bit what the same generator gives on the CPU, from
+#     any position, and leaving the host object exactly where the CPU would.
+#     Element k is `RandomDataStreams._draw_at(T, G, key, hi, lo, w0, k)`, the
+#     pure function the CPU test suite checks against the stream object: the
+#     same words in the same order, through the same `open01` conversion, whose
+#     arithmetic (shifts, an exact integer-to-float conversion, a multiplication
+#     by a power of two) rounds identically on any IEEE 754 device. A Float64
+#     takes two words of a 32-bit family and one of a 64-bit family; a Float32
+#     or Float16 takes one word of either. One thread per element.
 #
-# Two more normal-variate paths live here for comparison (branch
-# philox-gpu-randn-test), motivated by variance-reduction techniques
-# (antithetic variates, RQMC) that manipulate the *uniform* stream and expect
-# the uniform -> normal transform to carry that structure through faithfully:
+#   * Normal variates for Philox4x32 -- `randn!` (Box-Muller), and for
+#     comparison `randn_inversion!` and `randn_polar!`. These are not the CPU's
+#     algorithm (the Ziggurat, which does not fit a kernel: its rejection loop
+#     diverges within a warp), and their transcendental functions come from
+#     libdevice rather than Julia's libm, so they do not match any CPU output
+#     bit for bit. Their uniforms are `open01` of the same words `rand!` uses.
+#     They need a block-aligned generator.
+#
+# Box-Muller (not the Ziggurat algorithm the CPU `randn` uses) is the fit for a
+# GPU kernel: it consumes exactly two uniforms and produces exactly two normals
+# every time, with no rejection loop and so no warp divergence.
+#
+# The two comparison paths (branch philox-gpu-randn-test) are motivated by
+# variance-reduction techniques (antithetic variates, RQMC) that manipulate the
+# *uniform* stream and expect the uniform -> normal transform to carry that
+# structure through faithfully:
 #
 #   * `randn_inversion!` -- Z = Phi^-1(U) via CUDA's `normcdfinv` device
 #     intrinsic, one uniform to one normal, componentwise. Since Phi^-1 is
@@ -48,14 +49,14 @@
 #     data-dependent rejection loop, and a counter-advance that must reserve
 #     for a worst case instead of committing to an exact one.
 #
-# The per-thread primitives (`philox4x32_10`, `philox4x32_counter`) that a
-# kernel would use directly are plain functions in src/philox/philox.jl and
+# The per-thread primitives (`philox4x32_10`, `philox4x32_counter`, `open01`)
+# that a kernel of your own would use are plain functions in the package and
 # need no CUDA-specific wrapping at all.
 module RandomDataStreamsCUDAExt
 
 using CUDA
 using Random: Random
-using RandomDataStreams: RandomDataStreams, PhiloxRNG, philox4x32_10, open01
+using RandomDataStreams: RandomDataStreams, CBRNG, PhiloxRNG, philox4x32_10, open01
 import RandomDataStreams: randn_inversion!, randn_polar!
 
 # CUDA.jl moved its device math intrinsics into a `CUDACore` subpackage
@@ -77,47 +78,28 @@ end
 @inline _pair_lo(blk) = (UInt64(blk[2]) << 32) | UInt64(blk[1])
 @inline _pair_hi(blk) = (UInt64(blk[4]) << 32) | UInt64(blk[3])
 
-# Mirrors `_fill_u64!` for a `UInt32`-word family (cbrng/cbrng.jl): output
-# element `k` (0-based) belongs to Philox block `k >> 1` past the stream's
-# current counter, using the low pair of words when `k` is even and the high
-# pair when `k` is odd -- the same pairing a scalar `rand(rng)` would produce
-# if called `n` times from the same starting position.
-function _philox_fill_kernel!(A, key::NTuple{2,UInt32}, base_hi::UInt64, base_lo::UInt64, n::Int)
+# Element k of a uniform fill: one thread per element, each computing the block
+# its word(s) come from. Every draw is independent of the launch configuration.
+function _fill_kernel!(A, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int) where {G}
     k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
     if 0 <= k < n
-        blk = _philox_block(key, base_hi, base_lo, k >> 1)
-        word = isodd(k) ? _pair_hi(blk) : _pair_lo(blk)
-        @inbounds A[k + 1] = open01(word)
+        @inbounds A[k + 1] = RandomDataStreams._draw_at(eltype(A), G, key, hi, lo, w0, k)
     end
     return nothing
 end
 
 # One thread per Philox block, writing up to two normals: Box-Muller applied
-# to the block's two uniforms. `1.0 - u1` is in `(0, 1)` like `u1`; the `log`
-# argument was kept away from 0 this way when the conversion could return 0.
+# to the block's two uniforms. `open01` never returns 0, so `log(u1)` is finite.
 function _philox_randn_kernel!(A, key::NTuple{2,UInt32}, base_hi::UInt64, base_lo::UInt64, n::Int)
     b = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based block index
     if 2b < n
         blk = _philox_block(key, base_hi, base_lo, b)
         u1 = open01(_pair_lo(blk))
         u2 = open01(_pair_hi(blk))
-        r     = sqrt(-2.0 * log(1.0 - u1))
+        r     = sqrt(-2.0 * log(u1))
         theta = 2.0 * Float64(pi) * u2
         @inbounds A[2b + 1] = r * cos(theta)
         2b + 2 <= n && (@inbounds A[2b + 2] = r * sin(theta))
-    end
-    return nothing
-end
-
-# Native word-per-output Float32 fill: output element `k` (0-based) is word
-# `k & 3` of block `k >> 2` -- four independent uniforms per block, against
-# two for the Float64 kernel above, since a Philox4x32 word already is 32
-# bits and needs no pairing.
-function _philox_fill_kernel_f32!(A, key::NTuple{2,UInt32}, base_hi::UInt64, base_lo::UInt64, n::Int)
-    k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
-    if 0 <= k < n
-        blk = _philox_block(key, base_hi, base_lo, k >> 2)
-        @inbounds A[k + 1] = open01(blk[(k & 3) + 1])
     end
     return nothing
 end
@@ -130,14 +112,14 @@ function _philox_randn_kernel_f32!(A, key::NTuple{2,UInt32}, base_hi::UInt64, ba
         blk = _philox_block(key, base_hi, base_lo, b)
 
         u1, u2 = open01(blk[1]), open01(blk[2])
-        r1     = sqrt(-2f0 * log(1f0 - u1))
+        r1     = sqrt(-2f0 * log(u1))
         theta1 = 2f0 * Float32(pi) * u2
         @inbounds A[4b + 1] = r1 * cos(theta1)
         4b + 2 <= n && (@inbounds A[4b + 2] = r1 * sin(theta1))
 
         if 4b + 3 <= n
             u3, u4 = open01(blk[3]), open01(blk[4])
-            r2     = sqrt(-2f0 * log(1f0 - u3))
+            r2     = sqrt(-2f0 * log(u3))
             theta2 = 2f0 * Float32(pi) * u4
             @inbounds A[4b + 3] = r2 * cos(theta2)
             4b + 4 <= n && (@inbounds A[4b + 4] = r2 * sin(theta2))
@@ -214,8 +196,8 @@ function _philox_randn_kernel_polar!(A, key::NTuple{2,UInt32}, base_hi::UInt64, 
 end
 
 # Checks alignment, advances `rng.ctr` by `nblocks`, and returns
-# (base_hi, base_lo) for the kernel to start from -- the bookkeeping `rand!`
-# and `randn!` share.
+# (base_hi, base_lo) for the kernel to start from -- the bookkeeping the
+# normal-variate paths share. `rand!` needs none of it: it starts anywhere.
 function _philox_gpu_prep!(fname, rng::PhiloxRNG, nblocks::Integer)
     rng.idx == 5 || throw(ArgumentError(
         "$fname(::PhiloxRNG, ::CuArray) requires a block-aligned generator; " *
@@ -226,28 +208,28 @@ function _philox_gpu_prep!(fname, rng::PhiloxRNG, nblocks::Integer)
 end
 
 """
-    Random.rand!(rng::PhiloxRNG, A::CuArray{Float64}) -> A
+    Random.rand!(rng::CBRNG, A::CuArray{T}) -> A    (T = Float64, Float32, Float16)
 
-Fill `A` on the device with uniforms in `(0, 1)`, one independent Philox block
-per pair of output elements, and advance `rng`'s counter on the host by the
-number of blocks consumed -- so a later `rand(rng, ...)` or `rand!` call, on
-either the CPU or the GPU, continues from a fresh, non-overlapping position.
+Fill `A` on the device with uniforms in `(0, 1)`, and leave `rng` on the host
+exactly where the same fill on the CPU would: `Array(rand!(rng, A))` equals
+`rand!(copy(rng), Array(A))` bit for bit, for every counter-based generator and
+from any position, mid-block included. A later draw, on either device,
+continues from there.
 
-`rng` must be block-aligned (fresh from [`next_stream!`](@ref), or just after
-[`reset_substream!`](@ref)/[`reset_stream!`](@ref)/[`next_substream!`](@ref));
-this avoids replicating the CPU path's mid-block tail-buffering on the device.
-Calling it on a generator that has already made scalar draws mid-block throws
-`ArgumentError` -- call `reset_substream!(rng)` first if that state doesn't
-matter to you.
+A `Float64` takes two words of a 32-bit family and one word of a 64-bit family,
+a `Float32` or `Float16` one word of either, as on the CPU. Each element is
+computed by its own thread from the key and the counter alone, so the result
+does not depend on the launch configuration.
 """
-function Random.rand!(rng::PhiloxRNG, A::CuArray{Float64})
+function Random.rand!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}}
     n = length(A)
     n == 0 && return A
-    base_hi, base_lo = _philox_gpu_prep!("rand!", rng, cld(n, 2))
+    hi, lo, w0 = RandomDataStreams._draw_position(rng)
 
     threads = 256
     blocks = cld(n, threads)
-    @cuda threads = threads blocks = blocks _philox_fill_kernel!(A, rng.key, base_hi, base_lo, n)
+    @cuda threads = threads blocks = blocks _fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n)
+    RandomDataStreams._skip_draws!(rng, T, n)
     return A
 end
 
@@ -256,16 +238,19 @@ end
 
 Fill `A` on the device with standard normal draws via Box-Muller, one
 independent Philox block feeding one pair of normals, and advance `rng`'s
-counter on the host by the number of blocks consumed -- the same bookkeeping
-[`rand!`](@ref) uses, so GPU normal and uniform fills on the same stream stay
-non-overlapping with each other and with the CPU path.
+counter on the host by the number of blocks consumed, so GPU normal and uniform
+fills on the same stream stay non-overlapping with each other and with the CPU
+path.
 
 Box-Muller, not the Ziggurat algorithm the CPU `randn` uses: it takes exactly
 two uniforms and produces exactly two normals every time, so every thread
 does the same fixed amount of work. Its output is **not** meant to match CPU
 `randn` bit for bit -- the algorithms differ.
 
-Same block-alignment requirement as `rand!`; see its docstring.
+`rng` must be block-aligned: fresh from [`next_stream!`](@ref), or just after
+[`reset_substream!`](@ref), [`reset_stream!`](@ref) or
+[`next_substream!`](@ref), or after a fill that ended on a block boundary. On a
+generator that has made draws mid-block this throws `ArgumentError`.
 """
 function Random.randn!(rng::PhiloxRNG, A::CuArray{Float64})
     n = length(A)
@@ -280,35 +265,11 @@ function Random.randn!(rng::PhiloxRNG, A::CuArray{Float64})
 end
 
 """
-    Random.rand!(rng::PhiloxRNG, A::CuArray{Float32}) -> A
-
-Fill `A` on the device with `Float32` uniforms in `(0, 1)`, one independent
-Philox4x32-10 word per output element -- four per block, twice the Float64
-kernel's rate, since a word is already 32 bits and needs no pairing. Advances
-`rng`'s counter by the number of blocks consumed, same contract as the
-`Float64` method.
-
-Bit-compatible with the CPU's `rand(rng, Float32)`, which also takes one word
-per draw through `open01`. Same block-alignment requirement as the `Float64`
-method.
-"""
-function Random.rand!(rng::PhiloxRNG, A::CuArray{Float32})
-    n = length(A)
-    n == 0 && return A
-    base_hi, base_lo = _philox_gpu_prep!("rand!", rng, cld(n, 4))
-
-    threads = 256
-    blocks = cld(n, threads)
-    @cuda threads = threads blocks = blocks _philox_fill_kernel_f32!(A, rng.key, base_hi, base_lo, n)
-    return A
-end
-
-"""
     Random.randn!(rng::PhiloxRNG, A::CuArray{Float32}) -> A
 
 Fill `A` on the device with standard normal `Float32` draws via Box-Muller,
 one independent Philox4x32-10 block feeding two pairs of normals -- four per
-block, twice the `Float64` method's rate, for the same reason `rand!` doubles:
+block, twice the `Float64` method's rate, for the same reason `rand!` does:
 a word is already 32 bits, so no pairing is needed to build a uniform.
 Advances `rng`'s counter by the number of blocks consumed, same contract as
 the `Float64` method.
@@ -354,8 +315,8 @@ that uniform, in a way unrelated to negation. `randn_polar!`, included in
 this file for the same three-way comparison, has the same failure for the
 same reason, on top of its own (see its docstring).
 
-Its uniforms come from `open01`, which never returns 0 or 1, so `normcdfinv`
-is finite for every draw.
+Its uniforms come from [`open01`](@ref), which never returns 0 or 1, so
+`normcdfinv` is finite for every draw.
 
 Not bit-compatible with any CPU path, and not intended to be; not exported by
 `Random`, since it is not a Base standard-normal algorithm, just this
