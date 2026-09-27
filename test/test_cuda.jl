@@ -15,6 +15,25 @@ using Random
 using Test
 using CUDA
 
+# `normcdfinv` moved to the CUDACore subpackage in CUDA.jl 6; resolve it the way
+# the extension does.
+const _normcdfinv = isdefined(CUDA, :normcdfinv) ? CUDA.normcdfinv : CUDA.CUDACore.normcdfinv
+
+# Applied through a kernel rather than broadcast: in CUDA.jl 6 the intrinsic has
+# no host method, so broadcasting it fails at eltype inference.
+function _normcdfinv_kernel!(out, u)
+    i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    i <= length(out) && (@inbounds out[i] = _normcdfinv(u[i]))
+    return nothing
+end
+
+function device_normcdfinv(u::AbstractVector{Float64})
+    d = CuArray(u)
+    out = similar(d)
+    @cuda threads = 256 blocks = cld(length(d), 256) _normcdfinv_kernel!(out, d)
+    return Array(out)
+end
+
 if !CUDA.functional()
     @info "CUDA is not functional on this machine -- skipping GPU tests" CUDA.functional()
 else
@@ -156,7 +175,7 @@ end
             end
             b += 1
         end
-        expected = Array(CUDA.normcdfinv.(CuArray(u[1:n])))
+        expected = device_normcdfinv(u[1:n])
         @test v ≈ expected
     end
 
@@ -188,8 +207,8 @@ end
         # but isapprox is not going to agree).
         u = Array(CUDA.rand(Float64, 100_000))
         u = clamp.(u, 1.0e-12, 1.0 - 1.0e-12)
-        z    = Array(CUDA.normcdfinv.(CuArray(u)))
-        zbar = Array(CUDA.normcdfinv.(CuArray(1.0 .- u)))
+        z    = device_normcdfinv(u)
+        zbar = device_normcdfinv(1.0 .- u)
         @test zbar ≈ -z
     end
 
