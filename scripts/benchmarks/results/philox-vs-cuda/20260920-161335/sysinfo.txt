@@ -1,0 +1,15 @@
+RandomDataStreams benchmark host
+RandomDataStreams v0.2.0 @ b8953c90d765
+generated 2026-09-20 16:13:39
+
+Host:   plaquemine
+OS:     Linux x86_64-linux-gnu
+CPU:    raptorlake, 32 threads
+RAM:    125.4 GiB
+Julia:  1.13.0
+
+GPU:            NVIDIA RTX A2000 12GB
+Compute cap.:   8.6.0
+CUDA driver:    13.3.0
+CUDA runtime:   13.4.0
+GPU memory:     11.6 GiB

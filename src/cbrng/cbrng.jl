@@ -257,9 +257,21 @@ function _fill_u64!(f::F, rng::CBRNG{B,UInt32,N,K}, A::AbstractArray) where {F,B
     return A
 end
 
-# The conversion the scalar Float64 path applies to a raw 64-bit output; kept
-# identical so that `rand!` and repeated `rand` agree bit for bit.
-@inline _open01(u::UInt64) = _u01(Float64, u)
+"""
+    open01(u::UInt64) -> Float64
+    open01(u::UInt32) -> Float32
+
+Map a raw generator word to a uniform value in `(0, 1)`: the conversion every
+floating-point draw of a counter-based generator applies, scalar or array.
+Exposed so that a kernel producing raw words -- the package's CUDA extension, or
+one of your own built on [`philox4x32_10`](@ref) -- matches the CPU bit for bit.
+A `UInt64` word gives a `Float64` from its top 52 bits, a `UInt32` word a
+`Float32` from its top 23, each as an odd multiple of `2^-53` (`2^-24`). Only
+shifts, an integer-to-float conversion that is exact, and a multiplication by a
+power of two are involved, so every IEEE 754 device computes the same value.
+"""
+@inline open01(u::UInt64) = _u01(Float64, u)
+@inline open01(u::UInt32) = _u01(Float32, u)
 
 Random.rand!(rng::CBRNG{B,W,N,K}, A::Array{W}, ::Random.SamplerType{W}) where {B,W,N,K} =
     _fill_words!(rng, A)
@@ -269,7 +281,7 @@ Random.rand!(rng::CBRNG{B,UInt32,N,K}, A::Array{UInt64}, ::Random.SamplerType{UI
 
 Random.rand!(rng::CBRNG, A::Array{Float64},
              ::Random.SamplerTrivial{Random.CloseOpen01{Float64}}) =
-    _fill_u64!(_open01, rng, A)
+    _fill_u64!(open01, rng, A)
 
 # Streams and substreams -------------------------------------------------------
 # A stream is a key; a substream is a slice of the counter space of that key.
