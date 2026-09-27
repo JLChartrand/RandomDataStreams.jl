@@ -156,7 +156,11 @@ increment.
 
 ## Does this package run on the GPU?
 
-No. It assigns and navigates streams on the host. The counter-based bijections
-are pure functions of `(counter, key)`, so a device kernel can reproduce any
-draw the host assigned it from that pair alone; the generator objects
-themselves stay on the CPU. See [Streams & Substreams](streams.md).
+For the counter-based generators, yes. With CUDA.jl loaded, `rand!` fills a
+`CuArray{Float64}`, `CuArray{Float32}` or `CuArray{Float16}` on the device, bit
+for bit what the same call gives on the CPU from the same position, and leaves
+the generator object — which stays on the host — where the CPU fill would.
+`randn!` on a `CuArray` (Philox4x32 only) continues the same stream but uses
+Box-Muller, so its values differ from the CPU's `randn`. The recurrence-based
+generators assign and navigate streams on the host only. See
+[Streams & Substreams](streams.md).

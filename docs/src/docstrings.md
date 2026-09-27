@@ -70,6 +70,14 @@ philox4x32_counter
 open01
 ```
 
+The normal-variate fills below take their methods from the CUDA extension,
+loaded with CUDA.jl.
+
+```@docs
+randn_inversion!
+randn_polar!
+```
+
 ### Functions
 
 ```@docs

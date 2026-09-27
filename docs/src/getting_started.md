@@ -18,7 +18,9 @@ using Pkg
 Pkg.develop(path = "path/to/RandomDataStreams.jl")
 ```
 
-Requirements: Julia ≥ 1.6. The only dependency is the standard library `Random`.
+Requirements: Julia ≥ 1.9. The only dependency is the standard library `Random`;
+CUDA.jl, if loaded, enables GPU fills for the counter-based generators (see
+[Streams & Substreams](streams.md)).
 
 ## Choosing a generator
 

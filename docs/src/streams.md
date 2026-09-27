@@ -292,16 +292,46 @@ moves the state forward by `n` steps, where `n = 2^e + c` (`e` may be negative,
 and negative `c` moves backwards). This costs O(log n) matrix operations,
 independent of the distance jumped.
 
-## Scope: host-side streams, device-side bijections
+## Scope: host-side streams, device-side draws
 
 The stream object of L'Ecuyer et al. (2002) is stateful by construction — a
 current position, a substream anchor, a stream anchor, mutated in place. That
 makes it a **host-side** abstraction. A GPU kernel wants the opposite: no state
-at all, one value computed from the thread index. The package does not run on
-a device, and that is a scope boundary rather than a gap, because the two
-halves fit together.
+at all, one value computed from the thread index. The counter-based generators
+reconcile the two, and they are the only ones the package runs on a device.
 
-**Counter-based generators: the addressing scheme is the work assignment.** The
+**Counter-based generators: the GPU fill is the CPU fill.** With CUDA.jl
+loaded, `rand!(rng, A)` on a `CuArray{Float64}`, `CuArray{Float32}` or
+`CuArray{Float16}` fills `A` on the device for every counter-based generator —
+Philox4x32, Philox4x64, Threefry4x32, Threefry4x64 — and gives bit for bit what
+the same call gives on the CPU, from any position, mid-block included. The
+stream object stays on the host and is left exactly where the CPU fill would
+leave it, so the next draw, on either device, continues the same sequence:
+
+```julia
+using RandomDataStreams, CUDA
+
+rng = next_stream!(Philox4x64Gen(2026))
+A = CUDA.zeros(Float32, 10^8)
+rand!(rng, A)          # on the device: the values rand! gives on the CPU
+rand(rng)              # on the host: the draw that follows them
+```
+
+Element `k` is computed by its own thread as a pure function of the key, the
+counter and `k` — the same words, in the same order, through the same
+[`open01`](@ref) conversion as the stream object — so the result does not depend
+on the number of threads or on the launch configuration. The conversion's one
+floating-point operation is a subtraction whose exact result is representable,
+which IEEE 754 fixes to the last bit on any device. The test suite
+checks the position-addressed draws against the stream object on the CPU, and
+the device fill against the CPU fill whenever a CUDA device is present.
+
+Normal variates are the exception. `randn!` on a `CuArray` (Philox4x32 only)
+uses Box-Muller, which suits a kernel where the CPU's Ziggurat does not, and
+its logarithms and sines come from CUDA's libdevice rather than Julia's libm:
+it continues the same stream, but its values are not the CPU's `randn`.
+
+**Writing your own kernel: the addressing scheme is the work assignment.** The
 key names the stream, the high half of the counter the substream, the low half
 the position. Any draw can therefore be recomputed from `(key, substream,
 index)` alone, with no object, which is exactly what a kernel needs:
@@ -319,10 +349,10 @@ end
 ```
 
 This agrees with the stream object draw for draw; the test suite checks it, so
-host and device address the same sequence. `philox` and `threefry` are pure,
-allocation-free functions of their arguments, which is the necessary condition
-for using them inside a kernel — necessary, not sufficient: the package has no
-GPU dependency and runs no device tests, so that last step is the user's.
+host and device address the same sequence. [`philox4x32_10`](@ref),
+[`philox4x32_counter`](@ref) and [`open01`](@ref) are exported for this: pure,
+allocation-free functions that run inside a kernel, where the test suite also
+runs them.
 
 **Recurrence-based generators: the host computes the starting points.** There
 is no stateless form here, and the standard pattern runs the other way: use
@@ -336,12 +366,9 @@ seeds = [get_state(next_stream!(gen)) for _ in 1:nworkers]    # non-overlapping
 
 The jump machinery is what makes this cheap — matrix jumps for MRG32k3a, GF(2)
 polynomial jumps for the xoshiro families — and it is the construction
-L'Ecuyer et al. (2021, Sec. 2) describe for parallel environments.
-
-What the package does not provide: filling a `CuArray`, or any device-side
-`rand`. If that is what you need, take the bijections and the addressing scheme
-above, and keep the stream objects on the host for what they are good at —
-assigning non-overlapping work and replaying it identically.
+L'Ecuyer et al. (2021, Sec. 2) describe for parallel environments. The package
+provides no device-side draws for these families: a GPU fill of one stream
+would need every thread to jump to its own position first.
 
 ## One interface, every generator
 

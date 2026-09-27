@@ -59,7 +59,9 @@ using Pkg
 Pkg.add("RandomDataStreams")
 ```
 
-Requires Julia ≥ 1.6. The only dependency is the Julia standard library `Random`.
+Requires Julia ≥ 1.9. The only dependency is the Julia standard library `Random`;
+loading [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) alongside it enables GPU
+fills for the counter-based generators.
 
 ## Quick start
 

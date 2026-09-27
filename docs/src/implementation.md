@@ -417,6 +417,12 @@ Float32   u = (2k + 1) · 2^-24,   k = top 23 bits,   u ∈ [2^-24, 1 − 2^-24]
 Float16   u = (2k + 1) · 2^-11,   k = top 10 bits,   u ∈ [2^-11, 1 − 2^-11]
 ```
 
+It is computed by filling the mantissa of 1.0 with `k` and subtracting the
+float just below 1, `(1 + k·2^(1−p)) − (1 − 2^-p)`: the exact result is
+representable, so the subtraction is exact on any IEEE 754 device, which is
+what lets a GPU kernel reproduce the CPU's draws bit for bit (see
+[Streams & Substreams](streams.md)).
+
 Every value is exact, and the draws are the midpoints of `2^(p−1)` equal cells,
 so `1 − u` is exact and is itself a possible draw: antithetic pairs stay on the
 same grid. The open interval costs one bit of resolution. A `Float32` takes one

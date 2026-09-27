@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Julia 1.9 is the minimum**, for package extensions, which carry the CUDA
+  support without making CUDA.jl a dependency. CI tests 1.9 and the current
+  release.
+
 - **Every floating-point draw lies in the open interval `(0, 1)`**, for all
   seventeen generators, in `Float64`, `Float32` and `Float16`, and through
   `rand(rng)`, `rand(rng, T)`, arrays and `rand!` alike, so that inversion is
@@ -71,6 +75,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (2012) set for parallel streams.
 
 ### Added
+
+- **GPU fills for the counter-based generators, bit for bit the CPU's.** With
+  CUDA.jl loaded — a weak dependency, through a package extension —
+  `rand!(rng, A)` on a `CuArray{Float64}`, `CuArray{Float32}` or
+  `CuArray{Float16}` fills `A` on the device for Philox4x32, Philox4x64,
+  Threefry4x32 and Threefry4x64. The values are exactly those `rand!` gives on
+  the CPU from the same position, mid-block included, and the generator object,
+  which stays on the host, is left where the CPU fill would leave it. Element
+  `k` is a pure function of the key, the counter and `k`, checked against the
+  stream object on the CPU and against the CPU fill on the device; it does not
+  depend on the launch configuration. `randn!` on a `CuArray` (Box-Muller,
+  Philox4x32), with `randn_inversion!` and `randn_polar!` for comparison,
+  continues the same stream but is not the CPU's `randn`. `philox4x32_10`,
+  `philox4x32_counter` and `open01` are exported for writing kernels.
 
 - **Alphabit and Rabbit**, TestU01's bit-level batteries, which RNGTest never
   wrapped. `validate.jl --battery=alphabit|rabbit`, sized by `--bits` (2^30 by
