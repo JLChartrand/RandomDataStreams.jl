@@ -1403,6 +1403,23 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "the exported kernel primitives are the stream's own blocks" begin
+        # philox4x32_10 and philox4x32_counter are what a kernel of one's own
+        # calls; the GPU suite runs them on a device, and this checks on the CPU
+        # that they name the same block a PhiloxRNG produces at that counter.
+        key = (UInt32(5), UInt32(9))
+        for (hi, lo) in ((UInt64(0), UInt64(0)), (UInt64(3), typemax(UInt64)),
+                         (typemax(UInt64), UInt64(12345)))
+            c = (UInt128(hi) << 64) | UInt128(lo)
+            @test philox4x32_counter(hi, lo) == RandomDataStreams._ctr_words(UInt32, Val(4), c)
+            rng = PhiloxRNG(key)
+            rng.ctr = c
+            @test collect(philox4x32_10(philox4x32_counter(hi, lo), key)) ==
+                  [rand(rng, UInt32) for _ in 1:4]
+        end
+    end
+
+
     @testset "stateless addressing matches the stream object" begin
         # A counter-based draw must be recomputable from (key, substream,
         # index) alone, with no stream object: that identity is what lets a
