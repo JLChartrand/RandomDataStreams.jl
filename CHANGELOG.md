@@ -6,6 +6,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0]
+
+Every float draw moves to the open interval `(0, 1)`, and the counter-based
+generators gain GPU fills through a CUDA extension.
+
+### Breaking
+
+- **`close_open01` (`[0, 1)`) is removed; `open01` (`(0, 1)`) replaces it.**
+  The CPU no longer uses the old construction, so code calling
+  `close_open01` directly needs the new one instead.
+
 ### Changed
 
 - **Julia 1.9 is the minimum**, for package extensions, which carry the CUDA
@@ -223,5 +234,6 @@ Initial release: `MRG32k3a` and the xoshiro/xoroshiro families, with the stream
 and substream object model of L'Ecuyer et al. (2002). Registered without a git
 tag, which is why there is no comparison link for it below.
 
-[Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/JLChartrand/RandomDataStreams.jl/releases/tag/v0.2.0
