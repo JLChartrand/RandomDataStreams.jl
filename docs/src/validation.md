@@ -244,7 +244,9 @@ are different counts.
 
 The 2026 Crush campaign — seventeen generators, three suites, 51 runs, with
 Crush itself on the `bits` suite, as the campaign was shaped before Alphabit and
-Rabbit were reachable — gives the rule something to bite on. **No p-value came within four orders of
+Rabbit were reachable — gives the rule something to bite on. (Its `U(0,1)`
+results for the fifteen word-based generators predate the switch to the open
+interval; they were measured again, below.) **No p-value came within four orders of
 magnitude of 10⁻¹⁰**, so nothing was a failure outright. Eighteen lines were
 singled out across fifteen runs, against ≈15 expected: an unremarkable count,
 but a count is not an answer for any particular line.
@@ -272,6 +274,38 @@ those three gave:
 Suspicion gone, in 106 seconds against the 30 minutes the run itself took.
 That is the shape the write-up should take for each suspect: the original
 p-value, the replications, and the p-values themselves — not a verdict.
+
+### After the switch to the open interval
+
+The `U(0,1)` suites of the fifteen word-based generators — xoshiro and
+xoroshiro, PCG, the counter-based families — measured the conversion they used
+before every float draw moved to `(0, 1)` (see
+[Implementation Notes](implementation.md)). Those thirty runs, `single` and
+`interleaved`, were repeated on the new conversion: Crush, at commit `3f67bc0`,
+on an Intel Core i5-13500H, five at a time, ten hours in all. The MRG families,
+whose `Float64` draws did not change, were not re-run. **This is a first pass
+with Crush; the matrix has yet to be run with BigCrush.**
+
+Of 4320 statistics, **none came within five orders of magnitude of 10⁻¹⁰** —
+the most extreme lay 4.3 × 10⁻⁵ from 1 — and ten lines were singled out,
+against ≈8.6 expected from chance. All ten were replayed three times on
+disjoint streams; not one replication left [0.001, 0.999]:
+
+| generator | suite | test | original | replay 1 | replay 2 | replay 3 |
+|---|---|---|---|---|---|---|
+| PCG64 | single | CollisionOver, t = 20 | 1 − 4.3 × 10⁻⁵ | 0.20 | 0.73 | 0.61 |
+| PCG64 | single | RandomWalk1 J, L = 10000 | 2.7 × 10⁻⁴ | 0.97 | 0.92 | 0.52 |
+| Xoshiro256pp | single | WeightDistrib, r = 24 | 1.4 × 10⁻⁴ | 0.12 | 0.48 | 0.54 |
+| Xoshiro256pp | interleaved | SerialOver, t = 4 | 3.6 × 10⁻⁴ | 0.62 | 0.75 | 0.76 |
+| Xoroshiro128ss | single | MatrixRank, 300 × 300 | 1 − 1.6 × 10⁻⁴ | 0.81 | 0.63 | 0.32 |
+| Xoroshiro128ss | single | RandomWalk1 J, L = 10000 | 1 − 1.7 × 10⁻⁴ | 0.041 | 0.33 | 0.088 |
+| Xoshiro256p | interleaved | ClosePairs mNP1, t = 7 | 1 − 7.1 × 10⁻⁴ | 0.86 | 0.20 | 0.63 |
+| Xoshiro256ss | single | ClosePairs NJumps, t = 2 | 1 − 7.4 × 10⁻⁴ | 0.25 | 0.69 | 0.81 |
+| Threefry4x64-20 | single | AutoCor, d = 30 | 1 − 9.1 × 10⁻⁴ | 0.043 | 0.65 | 0.21 |
+| Xoroshiro128p | single | RandomWalk1 J, L = 90 | 8.4 × 10⁻⁴ | 0.17 | 0.70 | 0.46 |
+
+The same picture as the first campaign: a count at the level chance predicts,
+and suspects that scatter on independent output.
 
 ## Long campaigns: running for days without a session
 
