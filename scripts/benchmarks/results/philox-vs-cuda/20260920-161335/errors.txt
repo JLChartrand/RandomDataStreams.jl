@@ -1,0 +1,7 @@
+==============================================================================
+WARNING  philox_inversion Float32   2026-09-20 16:13:59
+RandomDataStreams v0.2.0 @ b8953c90d765
+Julia 1.13.0, CUDA.jl 6.4.0
+mean of exp(n) = 1.1621762469410897, expected 1.6487212707001282, z = -16495.42587796302: this contender's output does not look like N(0,1). The throughput row is kept in the CSV, but do not trust it.
+GPU: NVIDIA RTX A2000 12GB; free 11.140 GiB of 11.619 GiB
+

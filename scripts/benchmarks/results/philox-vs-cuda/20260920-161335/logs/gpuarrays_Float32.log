@@ -1,0 +1,10 @@
+  Activating project at `~/Documents/RandomDataStreams.jl/scripts/benchmarks`
+RandomDataStreams: philox vs CUDA.jl randn -- gpuarrays, Float32
+RandomDataStreams v0.2.0 @ b8953c90d765
+Julia 1.13.0, CUDA.jl 6.4.0
+GPU: NVIDIA RTX A2000 12GB
+total = 1073741824 draws per repetition, chunk = 67108864 (256.000 MiB), reps = 5
+
+gpuarrays          Float32   sum(exp):   25.045 Gdraws/s (min 0.0429 s, med 0.0429 s)
+                             fill    :   46.124 Gdraws/s (min 0.0233 s, med 0.0236 s)
+mean of exp(n) = 1.648694, expected 1.648721, z = -0.92

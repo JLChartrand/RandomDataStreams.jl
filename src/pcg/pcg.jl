@@ -265,20 +265,27 @@ Random.rng_native_52(::PCGRNG) = UInt64
 rand(rng::PCGRNG, ::Random.SamplerType{UInt64}) = next(rng)
 
 """
-Return a random Float64 in [0, 1).
+Return a random Float64 in (0, 1): the top 52 bits of one output, as an odd
+multiple of 2^-53.
 """
-rand(rng::PCGRNG) =
-    reinterpret(Float64, 0x3ff0000000000000 | (next(rng) & 0x000fffffffffffff)) - 1.0
+rand(rng::PCGRNG) = _u01(Float64, next(rng))
+
+# the sampler form, so that `rand(rng, Float64)`, arrays and `rand!` agree with it
+rand(rng::PCGRNG, ::Random.SamplerTrivial{Random.CloseOpen01_64}) = rand(rng)
 
 """
-Generates a `Float32` from a PCG generator.
+Generates a `Float32` in (0, 1) from a PCG generator: the top 23 bits of one
+output, as an odd multiple of 2^-24.
 """
-rand(rng::PCGRNG, ::Type{Float32}) = Float32(rand(rng))
+rand(rng::PCGRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) =
+    _u01(Float32, next(rng))
 
 """
-Generates a `Float16` from a PCG generator.
+Generates a `Float16` in (0, 1) from a PCG generator: the top 10 bits of one
+output, as an odd multiple of 2^-11.
 """
-rand(rng::PCGRNG, ::Type{Float16}) = Float16(rand(rng))
+rand(rng::PCGRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) =
+    _u01(Float16, next(rng))
 
 # Ranges are left to `Random`: the sampler it builds from the `SamplerType`
 # methods below rejects instead of folding with `%`, so it is unbiased and it

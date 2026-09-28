@@ -8,7 +8,7 @@ maintains two 3-component integer states updated by the recurrences
 ```
 p1 = (1403580 · x2 − 810728 · x1) mod m1,      m1 = 2^32 − 209
 p2 = (527612  · y2 − 1370589 · y0) mod m2,    m2 = 2^32 − 22853
-u  = (p1 − p2) / m1   (with wrap-around) ∈ [0, 1)
+u  = (p1 − p2) / (m1 + 1)   (with wrap-around) ∈ (0, 1)
 ```
 
 The combined generator has period ≈ 2^191.
@@ -84,7 +84,8 @@ u  = (p1 − p2) / (m1 + 1)   (with wrap-around) ∈ (0, 1)
 
 Period ≈ `2^377`, against `2^191`; entropy per step `log2(m1) = 63.0` bits,
 against 32.0. The package reproduces L'Ecuyer's C implementation value for
-value, checked on three seeds and a million draws.
+value, checked on three seeds and a million draws — with one exception, the
+twelve draws that round to exactly 1.0 (see *Floating-point outputs* below).
 
 ### Reduction without a 128-bit division
 
@@ -198,8 +199,8 @@ s3 = xor(s3, s1);  s4 = xor(s4, s2);  s2 = xor(s2, s3);  s1 = xor(s1, s4);  s3 =
 
 The output word is the sum of two internal words (`+` variant): fastest of the
 xoshiro family for float generation, though the low three bits of the raw
-output have limited linear complexity — irrelevant once scaled to `Float64`
-(53 bits used). Period: 2^256 − 1.
+output have limited linear complexity — irrelevant once scaled to `Float64`,
+which uses the top 52 bits. Period: 2^256 − 1.
 
 ### Jumps
 
@@ -398,6 +399,55 @@ uniform over its full width — fine for indexing, shuffling and flags in a
 simulation, not for cryptographic use. `MRG63k3a` above is the same
 construction with twice the chunk width and half the steps per word; it is
 the one to reach for when a run consumes integers rather than floats.
+
+## Floating-point outputs
+
+Every generator returns floating-point draws in the open interval `(0, 1)`, in
+`Float64`, `Float32` and `Float16`, through `rand(rng)`, `rand(rng, T)`,
+`rand(rng, T, dims...)` and `rand!` alike. Neither end is reachable, so
+inversion — a quantile function, `-log(u)`, `Φ⁻¹(u)` — is finite for every draw.
+
+For the families whose native output is a word (xoshiro/xoroshiro, PCG,
+counter-based), the top `p − 1` bits of the word, read as an integer `k`, give
+an odd multiple of `2^-p`, where `p` is the precision of the type:
+
+```
+Float64   u = (2k + 1) · 2^-53,   k = top 52 bits,   u ∈ [2^-53, 1 − 2^-53]
+Float32   u = (2k + 1) · 2^-24,   k = top 23 bits,   u ∈ [2^-24, 1 − 2^-24]
+Float16   u = (2k + 1) · 2^-11,   k = top 10 bits,   u ∈ [2^-11, 1 − 2^-11]
+```
+
+It is computed by filling the mantissa of 1.0 with `k` and subtracting the
+float just below 1, `(1 + k·2^(1−p)) − (1 − 2^-p)`: the exact result is
+representable, so the subtraction is exact on any IEEE 754 device, which is
+what lets a GPU kernel reproduce the CPU's draws bit for bit (see
+[Streams & Substreams](streams.md)).
+
+Every value is exact, and the draws are the midpoints of `2^(p−1)` equal cells,
+so `1 − u` is exact and is itself a possible draw: antithetic pairs stay on the
+same grid. The open interval costs one bit of resolution. A `Float32` takes one
+64-bit output on the xoshiro and PCG families, and on the counter-based ones
+the 32-bit draw `rand(rng, UInt32)` returns — so Philox4x32 spends one word per
+`Float32`, not two.
+
+The constructions this replaced each failed at one end. Dividing by
+`typemax(UInt64)` (xoshiro) returned exactly 1 for the top `2^10` outputs, and 0
+for an output of 0. Rounding a `Float64` draw to `Float32` returned `1.0f0` once
+in `2^25` draws, once in `2^12` for `Float16`. Filling the mantissa of 1.0 and
+subtracting 1 — PCG, the counter-based families, and the standard library's
+`Float32` path, which array fills took — returned 0.
+
+The MRG families produce a `Float64` in `(0, 1)` natively, `k / (m1 + 1)` with
+`k ∈ [1, m1]`, and every path now returns that value. Array fills used to go
+through `Random`'s `(1 + u) − 1` instead, which rounds `u` to a multiple of
+`2^-52` and, for MRG63k3a, returned 0 below `2^-53` and 1 above `1 − 2^-53`. A
+`Float32` or `Float16` takes the top 32 bits of the fraction through the
+construction above, one step per draw.
+
+MRG63k3a needs one more guard. For the twelve largest values of `k`,
+`k / (m1 + 1)` lies within `2^-54` of 1 and the product rounds to exactly 1.0 —
+in L'Ecuyer's C code as well. Those draws are capped at `prevfloat(1.0)`, the
+only place where the package departs from the reference values.
 
 ## Testing strategy
 

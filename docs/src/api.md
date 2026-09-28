@@ -89,7 +89,7 @@ Seeds are validated with `checkseed`; invalid seeds throw an `AssertionError`.
 ### Functions
 
 **`rand(rng::MRG32k3a) -> Float64`**
-Uniform in [0, 1) with ~32 bits of resolution. This is the native output.
+Uniform in (0, 1) with ~32 bits of resolution. This is the native output.
 
 **`rand(rng::MRG32k3a, T)`**
 Supported `T`: `Float64`, `Float32`, `Float16`, `UInt8…UInt128`,
@@ -218,7 +218,7 @@ matrices are computed at precompilation rather than tabulated.
 ### Functions
 
 **`rand(rng::Xoshiro256p) -> Float64`**
-Uniform in [0, 1), built from a full 64-bit draw.
+Uniform in (0, 1), from the top 52 bits of one 64-bit output.
 
 **`rand(rng::Xoshiro256p, T)`**
 Supported `T`: `Float64`, `Float32`, `Float16`, and the integer and `Bool`

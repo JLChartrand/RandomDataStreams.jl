@@ -97,3 +97,45 @@ const Philox4x64RNG = CBRNG{:philox4x64_10,UInt64,4,2}
 Hands out independent [`Philox4x64RNG`](@ref) streams, one distinct key each.
 """
 const Philox4x64Gen = CBGen{:philox4x64_10,UInt64,4,2}
+
+# GPU-facing primitives ---------------------------------------------------------
+#
+# `CBRNG` is a mutable struct: it cannot be instantiated inside a kernel, where
+# there is no allocator or GC. But the bijection itself never needed the struct
+# -- it is already a pure function of a counter and a key -- so a kernel can
+# call it directly, deriving each thread's counter from its thread index
+# instead of reading it from a stream object. Philox4x32-10 is the variant to
+# reach for here: its arithmetic (`widemul` of two `UInt32`) is a single native
+# instruction on every GPU vendor's ISA, where the 64x64->128 bit multiply
+# Philox4x64-10 needs is not.
+#
+# `PhiloxRNG` uses exactly this layout for its own counter, so a stream and a
+# kernel computing "the same" counter agree on the block it names.
+
+"""
+    philox4x32_10(ctr::NTuple{4,UInt32}, key::NTuple{2,UInt32}) -> NTuple{4,UInt32}
+
+Ten-round Philox4x32 bijection, the primitive [`PhiloxRNG`](@ref) is built on.
+Exposed directly for GPU kernels: every thread calls this with its own counter
+and the stream's key to get its block, with no shared state and no
+synchronization between threads.
+"""
+@inline philox4x32_10(ctr::NTuple{4,UInt32}, key::NTuple{2,UInt32}) = philox(ctr, key, Val(10))
+
+"""
+    philox4x32_counter(hi::UInt64, lo::UInt64) -> NTuple{4,UInt32}
+
+Pack a 128-bit Philox4x32 counter out of two 64-bit halves: `hi` typically
+addresses a substream -- a GPU thread's global index, so distinct threads never
+collide -- and `lo` the position within it -- a per-thread draw index, so one
+thread can take several draws. This is the same high/low split
+[`next_substream!`](@ref) uses on a [`PhiloxRNG`](@ref), exposed as a plain
+function because a kernel has no stream object to call it on.
+
+Built out of `UInt64` shifts and truncations rather than a `UInt128`
+intermediate, since not every GPU compiler backend lowers 128-bit integer
+arithmetic; only bitwise ops on 64-bit words are needed here, and every
+backend handles those natively.
+"""
+@inline philox4x32_counter(hi::UInt64, lo::UInt64) =
+    (lo % UInt32, (lo >> 32) % UInt32, hi % UInt32, (hi >> 32) % UInt32)

@@ -66,11 +66,22 @@ own representation — its seed vector, or a `UInt128` for PCG — is taken as t
 state itself rather than hashed. See
 [Streams & Substreams](streams.md) for the full table.
 
+## Can `rand` return 0 or 1?
+
+No, for every generator and every floating-point type: draws lie in the open
+interval `(0, 1)`, so `-log(rand(rng))` or a quantile function applied to a
+draw is always finite. The price is one bit of resolution — 52 bits for a
+`Float64`, 23 for a `Float32`. In exchange the draws sit on a grid symmetric
+about 1/2, so `1 - u` is exact and is itself a possible draw, which is what
+antithetic variates need. See [Implementation Notes](implementation.md).
+
 ## How do I run truly parallel simulations?
 
-Take the streams first, then parallelise over them:
-`rngs = next_stream!(gen, nthreads())`. Streams share no state, so one per
-thread needs no synchronisation.
+Take one stream per replication first, then parallelise over the replications:
+`rngs = next_stream!(gen, nrep)`, and replication `r` draws from `rngs[r]`.
+Streams share no state, so this needs no synchronisation, and since the stream
+follows the replication rather than the thread, the results do not change with
+the number of threads.
 
 Never call `next_stream!` on a shared generator object from inside a parallel
 loop. The generator rewrites the seed of the next stream on every call, so
@@ -145,7 +156,11 @@ increment.
 
 ## Does this package run on the GPU?
 
-No. It assigns and navigates streams on the host. The counter-based bijections
-are pure functions of `(counter, key)`, so a device kernel can reproduce any
-draw the host assigned it from that pair alone; the generator objects
-themselves stay on the CPU. See [Streams & Substreams](streams.md).
+For the counter-based generators, yes. With CUDA.jl loaded, `rand!` fills a
+`CuArray{Float64}`, `CuArray{Float32}` or `CuArray{Float16}` on the device, bit
+for bit what the same call gives on the CPU from the same position, and leaves
+the generator object — which stays on the host — where the CPU fill would.
+`randn!` on a `CuArray` (Philox4x32 only) continues the same stream but uses
+Box-Muller, so its values differ from the CPU's `randn`. The recurrence-based
+generators assign and navigate streams on the host only. See
+[Streams & Substreams](streams.md).

@@ -347,9 +347,13 @@ Random.rng_native_52(::LinRNG) = UInt64
 rand(rng::LinRNG, ::Random.SamplerType{UInt64}) = next(rng)
 
 """
-Return a random Float64 in [0, 1).
+Return a random Float64 in (0, 1): the top 52 bits of one output, as an odd
+multiple of 2^-53. The top bits are the ones the `+` scramblers leave strongest.
 """
-rand(rng::LinRNG) = next(rng) / (UInt64(0) - 1)
+rand(rng::LinRNG) = _u01(Float64, next(rng))
+
+# the sampler form, so that `rand(rng, Float64)`, arrays and `rand!` agree with it
+rand(rng::LinRNG, ::Random.SamplerTrivial{Random.CloseOpen01_64}) = rand(rng)
 
 # Generic stream generator ---------------------------------------------------------
 

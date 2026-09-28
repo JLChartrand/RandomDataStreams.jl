@@ -37,7 +37,7 @@ gen  = MRG32k3aGen()
 rngA = next_stream!(gen)      # independent stream A
 rngB = next_stream!(gen)      # independent stream B
 
-rand(rngA)                   # Float64 in [0, 1)
+rand(rngA)                   # Float64 in (0, 1)
 next_substream!(rngA)        # move to the next substream of A
 reset_stream!(rngA)          # rewind stream A to its beginning
 ```

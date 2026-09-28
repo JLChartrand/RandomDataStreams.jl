@@ -43,7 +43,8 @@ end
 @inline rand(rng::MRG32k3a, ::Random.SamplerType{Int128})::Int128 = reinterpret(Int128, rand(rng, UInt128))
 
 """
-Produces a raw random number with 32 bits of precision.
+Produces a raw random number with 32 bits of precision, in (0, 1): the
+combination `k` lies in `1:m1` and is scaled by `1/(m1 + 1)`.
 """
 @inline function rand(rng::MRG32k3a)::Float64
     p1, p2 = next_pair!(rng)
@@ -51,6 +52,13 @@ Produces a raw random number with 32 bits of precision.
 end
 
 rand(rng::MRG32k3a, ::Type{Float64}) = rand(rng)
+
+# The sampler forms. Without them `rand(rng, n)` and `rand!` went through
+# `(1 + u) - 1`, which rounds u to a multiple of 2^-52, and Float32 and Float16
+# through the standard library's mantissa construction, which can return 0.
+rand(rng::MRG32k3a, ::Random.SamplerTrivial{Random.CloseOpen01_64}) = rand(rng)
+rand(rng::MRG32k3a, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) = _u01(Float32, rand(rng))
+rand(rng::MRG32k3a, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) = _u01(Float16, rand(rng))
 
 """
 Hook required by Random's generic machinery for Float64-native generators:

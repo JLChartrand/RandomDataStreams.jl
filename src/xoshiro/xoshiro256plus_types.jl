@@ -1,12 +1,16 @@
 """
-Generates a `Float32` from any xoshiro/xoroshiro generator.
+Generates a `Float32` in (0, 1) from any xoshiro/xoroshiro generator: the top
+23 bits of one output, as an odd multiple of 2^-24.
 """
-rand(rng::LinRNG, ::Type{Float32}) = Float32(rand(rng))
+rand(rng::LinRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float32}}) =
+    _u01(Float32, next(rng))
 
 """
-Generates a `Float16` from any xoshiro/xoroshiro generator.
+Generates a `Float16` in (0, 1) from any xoshiro/xoroshiro generator: the top
+10 bits of one output, as an odd multiple of 2^-11.
 """
-rand(rng::LinRNG, ::Type{Float16}) = Float16(rand(rng))
+rand(rng::LinRNG, ::Random.SamplerTrivial{Random.CloseOpen01{Float16}}) =
+    _u01(Float16, next(rng))
 
 # Full Random-API coverage for integer and character types, mirroring the
 # derivation used by the standard library's Xoshiro. Ranges are left to

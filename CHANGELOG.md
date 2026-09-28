@@ -8,6 +8,40 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Julia 1.9 is the minimum**, for package extensions, which carry the CUDA
+  support without making CUDA.jl a dependency. CI tests 1.9 and the current
+  release.
+
+- **Every floating-point draw lies in the open interval `(0, 1)`**, for all
+  seventeen generators, in `Float64`, `Float32` and `Float16`, and through
+  `rand(rng)`, `rand(rng, T)`, arrays and `rand!` alike, so that inversion is
+  finite for every draw. The word-based families (xoshiro, PCG, counter-based)
+  now return `(2k + 1) · 2^-p`, with `k` the top `p − 1` bits of the word and
+  `p` the precision of the type: exact values, symmetric under `u ↦ 1 − u`, at
+  the cost of one bit of resolution. **The values drawn change** for these
+  fifteen generators in every float type, and for the MRG families in
+  `Float32` and `Float16`. The scalar `Float64` draws of the MRG families are
+  unchanged, but for the MRG63k3a cap below, and array fills now match them.
+  TestU01 results measured on `Float64` for the word-based families predate
+  the change; those of the MRG families do not.
+  Several paths had reached an end of the interval:
+  - `rand(rng)` on xoshiro divided by `typemax(UInt64)`, returning exactly 1
+    for the top `2^10` outputs;
+  - `rand(rng, Float32)` was `Float32(rand(rng))`, returning `1.0f0` once in
+    `2^25` draws (`Float16(1)` once in `2^12`);
+  - PCG, the counter-based families and the standard library's `Float32` path
+    filled the mantissa of 1.0 and subtracted 1, which can return 0;
+  - arrays from the MRG families went through `(1 + u) − 1`, which for
+    MRG63k3a returned 0 below `2^-53` and 1 above `1 − 2^-53`;
+  - MRG63k3a's own `k / (m1 + 1)` rounds to exactly 1.0 for the twelve largest
+    `k`, as in L'Ecuyer's C code; those draws are now capped at
+    `prevfloat(1.0)`.
+  The narrow floats were also defined on `::Type` only, so `rand(rng, Float32,
+  n)` bypassed them, read the low bits of the word, and disagreed with the
+  scalar draws. All paths are now sampler methods, and the test suite checks
+  scalar, array and `rand!` against each other and against the documented
+  construction for every generator.
+
 - **TestU01 is driven directly, and RNGTest.jl is no longer a dependency.**
   `test/tu01.jl` calls the same `TestU01_jll` artifact the wrapper used, and
   covers what this package runs: the three Crush batteries, the `Repeat`
@@ -33,7 +67,28 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same name as `--battery` restoring the old uniform matrix. `validate.jl`
   stays orthogonal: any battery, any suite.
 
+- **The threading examples take one stream per replication, not per thread.**
+  The README, the FAQ, *Streams & Substreams* and the `next_stream!(gen, n)`
+  docstring allocated `nthreads()` streams, which ties what a replication draws
+  to the number of threads. Indexed by replication, the results are the same on
+  one thread or on sixty-four — the requirement Passerat-Palmbach, Mazel & Hill
+  (2012) set for parallel streams.
+
 ### Added
+
+- **GPU fills for the counter-based generators, bit for bit the CPU's.** With
+  CUDA.jl loaded — a weak dependency, through a package extension —
+  `rand!(rng, A)` on a `CuArray{Float64}`, `CuArray{Float32}` or
+  `CuArray{Float16}` fills `A` on the device for Philox4x32, Philox4x64,
+  Threefry4x32 and Threefry4x64. The values are exactly those `rand!` gives on
+  the CPU from the same position, mid-block included, and the generator object,
+  which stays on the host, is left where the CPU fill would leave it. Element
+  `k` is a pure function of the key, the counter and `k`, checked against the
+  stream object on the CPU and against the CPU fill on the device; it does not
+  depend on the launch configuration. `randn!` on a `CuArray` (Box-Muller,
+  Philox4x32), with `randn_inversion!` and `randn_polar!` for comparison,
+  continues the same stream but is not the CPU's `randn`. `philox4x32_10`,
+  `philox4x32_counter` and `open01` are exported for writing kernels.
 
 - **Alphabit and Rabbit**, TestU01's bit-level batteries, which RNGTest never
   wrapped. `validate.jl --battery=alphabit|rabbit`, sized by `--bits` (2^30 by

@@ -17,8 +17,8 @@
 #   --bits-battery=<name>[,<name>]        what the bits suite runs
 #                                         (default alphabit,rabbit)
 #   --bits=<n>                            size for alphabit/rabbit
-#   --suite=single|interleaved|bits|all   default all
-#   --generator=<name>|all                default all
+#   --suite=<suite>[,<suite>]|all         single, interleaved, bits; default all
+#   --generator=<name>[,<name>]|all       default all
 #   --jobs=<n>                            concurrent processes (default: cores/4)
 #   --out=<dir>                           default testu01-results
 #   --calibrate                           run ONE job, report its cost, exit
@@ -119,9 +119,20 @@ which is why the matrix is no longer one job per (suite, generator).
 batteries_for(suite, opts) =
     suite == "bits" ? opts["bits-battery"] : [opts["battery"]]
 
+# `all`, or a comma-separated list checked against what exists: a misspelt name
+# must stop the campaign before it starts, not fail one job hours into it.
+function selection(value, known, what)
+    value == "all" && return known
+    picked = String.(split(value, ','))
+    for x in picked
+        x in known || error("unknown $what: $x (one of $(join(known, ", ")))")
+    end
+    return picked
+end
+
 function matrix(opts)
-    names  = opts["generator"] == "all" ? generator_names() : [opts["generator"]]
-    suites = opts["suite"] == "all" ? SUITES : [opts["suite"]]
+    names  = selection(opts["generator"], generator_names(), "generator")
+    suites = selection(opts["suite"], SUITES, "suite")
     return [(b, s, g) for s in suites for g in names for b in batteries_for(s, opts)]
 end
 

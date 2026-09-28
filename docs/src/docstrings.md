@@ -62,20 +62,36 @@ Xoshiro512ppGen
 RandomDataStreams.CBGen
 ```
 
+### GPU primitives
+
+```@docs
+philox4x32_10
+philox4x32_counter
+open01
+```
+
+The normal-variate fills below take their methods from the CUDA extension,
+loaded with CUDA.jl.
+
+```@docs
+randn_inversion!
+randn_polar!
+```
+
 ### Functions
 
 ```@docs
 rand(::MRG32k3a)
 rand(::MRG63k3a)
 rand(::RandomDataStreams.LinRNG)
-rand(::RandomDataStreams.LinRNG, ::Type{Float32})
-rand(::RandomDataStreams.LinRNG, ::Type{Float16})
+rand(::RandomDataStreams.LinRNG, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen01{Float32}})
+rand(::RandomDataStreams.LinRNG, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen01{Float16}})
 rand(::RandomDataStreams.CBRNG)
-rand(::RandomDataStreams.CBRNG, ::Type{Float32})
-rand(::RandomDataStreams.CBRNG, ::Type{Float16})
+rand(::RandomDataStreams.CBRNG, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen01{Float32}})
+rand(::RandomDataStreams.CBRNG, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen01{Float16}})
 rand(::PCGRNG)
-rand(::PCGRNG, ::Type{Float32})
-rand(::PCGRNG, ::Type{Float16})
+rand(::PCGRNG, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen01{Float32}})
+rand(::PCGRNG, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen01{Float16}})
 rand(::MRG32k3a, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen12_64})
 rand(::MRG63k3a, ::RandomDataStreams.Random.SamplerTrivial{RandomDataStreams.Random.CloseOpen12_64})
 short_jump!
