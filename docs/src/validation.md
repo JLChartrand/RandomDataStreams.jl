@@ -41,7 +41,8 @@ exercises the key schedule: a schedule handing out structurally related keys
 shows up here and not in a battery run on a single stream.
 
 The heavier configurations recommended by the paper (up to 1024 streams and up
-to 8 values per stream) are in `scripts/testu01_bigcrush.jl`.
+to 8 values per stream) are reached through `--streams` and `--values` of
+`scripts/testu01/validate.jl`; a campaign runs the 64 × 1 shape.
 
 ### Platform limitation
 
@@ -283,8 +284,8 @@ before every float draw moved to `(0, 1)` (see
 [Implementation Notes](implementation.md)). Those thirty runs, `single` and
 `interleaved`, were repeated on the new conversion: Crush, at commit `3f67bc0`,
 on an Intel Core i5-13500H, five at a time, ten hours in all. The MRG families,
-whose `Float64` draws did not change, were not re-run. **This is a first pass
-with Crush; the matrix has yet to be run with BigCrush.**
+whose `Float64` draws did not change, were not re-run. This was a first pass
+with Crush; [the BigCrush sweep](#BigCrush-over-the-whole-matrix) followed.
 
 Of 4320 statistics, **none came within five orders of magnitude of 10⁻¹⁰** —
 the most extreme lay 4.3 × 10⁻⁵ from 1 — and ten lines were singled out,
@@ -306,6 +307,50 @@ disjoint streams; not one replication left [0.001, 0.999]:
 
 The same picture as the first campaign: a count at the level chance predicts,
 and suspects that scatter on independent output.
+
+### BigCrush over the whole matrix
+
+The full matrix — the seventeen generators, BigCrush on the `single` and
+`interleaved` suites, Alphabit and Rabbit at 2³⁰ bits on `bits`, 68 runs — was
+run at commit `2b485cd` (v0.3.0), from a clean tree, on an Intel Core Ultra 9
+285 (8 performance and 16 efficiency cores, no SMT) with Julia 1.12.1, 24 runs
+at a time. A BigCrush run took 2.6 to 5.0 hours, mostly according to the kind of
+core it landed on, with a peak resident set of 1.3 GB; Alphabit took half a
+minute and Rabbit two to five. The sweep took eight hours of wall-clock time,
+after a calibration run of 2.6 hours.
+
+| battery, suite | runs | statistics | outside [0.001, 0.999] | failures |
+|---|---|---|---|---|
+| BigCrush, `single` | 17 | 2720 | 3 | 0 |
+| BigCrush, `interleaved` (64 streams × 1) | 17 | 2720 | 5 | 0 |
+| Alphabit, `bits` | 17 | 289 | 1 | 0 |
+| Rabbit, `bits` | 17 | 680 | 2 | 0 |
+
+Of 6409 statistics, **none was a failure outright**: the most extreme lay
+2.8 × 10⁻⁶ from 1 (`PCG64DXSM`, Rabbit, MultinomialBitsOver), four orders of
+magnitude short of 10⁻¹⁰. Eleven lines were singled out, against ≈12.8 expected
+from chance. All eleven were replayed three times on streams 1025 and up, and
+**none of the 33 replications left [0.001, 0.999]**:
+
+| generator | suite | test | original | replay 1 | replay 2 | replay 3 |
+|---|---|---|---|---|---|---|
+| PCG64DXSM | bits, Rabbit | MultinomialBitsOver | 1 − 2.8 × 10⁻⁶ | 0.0033 | 0.96 | 0.79 |
+| Xoshiro256p | bits, Rabbit | MultinomialBitsOver | 1.5 × 10⁻⁴ | 0.31 | 0.87 | 0.94 |
+| Xoshiro512pp | single | CollisionOver, t = 21 | 1.5 × 10⁻⁴ | 0.97 | 0.37 | 0.12 |
+| Philox4x32-10 | single | WeightDistrib, r = 0 | 1 − 1.7 × 10⁻⁴ | 0.035 | 0.41 | 0.30 |
+| Xoshiro256p | single | Gap, r = 0 | 2.4 × 10⁻⁴ | 0.32 | 0.84 | 0.12 |
+| Threefry4x32-20 | bits, Alphabit | RandomWalk1 J, L = 64 | 4.6 × 10⁻⁴ | 0.76 | 0.67 | 0.23 |
+| MRG63k3a | interleaved | SampleMean, r = 10 | 1 − 6.4 × 10⁻⁴ | 0.12 | 0.13 | 0.57 |
+| Xoroshiro128p | interleaved | ClosePairs NJumps, t = 5 | 7.3 × 10⁻⁴ | 0.74 | 0.62 | 0.36 |
+| Xoroshiro128p | interleaved | CollisionOver, t = 14 | 1 − 4.2 × 10⁻⁴ | 0.29 | 0.51 | 0.71 |
+| Philox4x32-10 | interleaved | HammingCorr, L = 1200 | 1 − 8.0 × 10⁻⁴ | 0.013 | 0.58 | 0.35 |
+| Xoshiro256ss | interleaved | CollisionOver, t = 7 | 1 − 6.2 × 10⁻⁴ | 0.63 | 0.74 | 0.12 |
+
+A replay recomputes every statistic of the tests it re-applies, 60 here, and one
+that had not been singled out left the interval once: ClosePairs NP, t = 5, for
+`Xoroshiro128p` interleaved, 0.21 in the original run and 0.58, 0.28 and 0.9994
+in the replays — one extreme value in four, for a statistic unremarkable the
+first time, against ≈0.12 such lines expected among 60.
 
 ## Long campaigns: running for days without a session
 
@@ -493,20 +538,24 @@ On a hybrid CPU (Intel 12th generation and later) pin the benchmark to a
 performance core with `taskset`; the batteries can use any core, since their
 results do not depend on how fast they were produced.
 
-### What still needs BigCrush
+### What BigCrush settled, and what it did not
 
-Two things the suite cannot settle at SmallCrush level:
+Two things the suite cannot settle at SmallCrush level, and where the
+[BigCrush sweep](#BigCrush-over-the-whole-matrix) leaves them:
 
 - **The low bits of the `+` scramblers.** Blackman & Vigna document the lowest
-  bits of `xoshiro256+` and `xoroshiro128+` as linearly weak. SmallCrush does
-  not resolve it, so the `bits` suite passing at that level is not a
-  clearance; the question needs Crush or BigCrush, and possibly does not show
-  even there. Alphabit and Rabbit on the bit stream are the cheaper instrument
-  aimed at exactly this, and are worth running first.
-- **Dependence between streams at full strength.** The interleaved suite is
-  the construction L'Ecuyer et al. (2021) call for, and the paper says
-  batteries for counter-based generators still need development. A SmallCrush
-  pass is a smoke test; the claim worth publishing is a BigCrush one.
+  bits of `xoshiro256+` and `xoroshiro128+` as linearly weak, and the `bits`
+  suite hands exactly those bits to the batteries: a `UInt32` is the low half of
+  the word. Alphabit and Rabbit at 2³⁰ bits passed on all three `+` generators,
+  and BigCrush passed on their `U(0,1)` output. That narrows the question
+  without closing it: a pass is not a proof, and a weakness confined to the
+  lowest bit or two can be diluted in a test of the whole 32-bit word.
+- **Dependence between streams.** The interleaved suite is the construction
+  L'Ecuyer et al. (2021) call for, and the paper says batteries for
+  counter-based generators still need development. BigCrush passed on it for
+  all seventeen generators, in the 64 × 1 shape; the heavier configurations the
+  paper suggests, up to 1024 streams and up to 8 values per stream, have not
+  been run at BigCrush.
 
 Results belong in the JOSS submission, not in CI.
 

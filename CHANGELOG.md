@@ -29,6 +29,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which is the usual case on a first `prepare`: the check now asks the nearest
   directory that does.
 
+### Validation
+
+- **BigCrush over the whole matrix**, at v0.3.0: the seventeen generators,
+  BigCrush on the `single` and `interleaved` suites, Alphabit and Rabbit on
+  `bits`, 68 runs and 6409 statistics. No failure; eleven suspects against ≈12.8
+  expected, and none of their 33 replications on disjoint streams left
+  [0.001, 0.999]. See `docs/src/validation.md`.
+
 ## [0.3.0]
 
 Every float draw moves to the open interval `(0, 1)`, and the counter-based
