@@ -434,25 +434,39 @@ CROND[91468]: (CRON) ERROR chdir failed (/u/you): Permission denied
 ```
 
 `prepare` recognises the case. It refuses to begin without a valid ticket, and
-wraps the driver in `krenew`, which renews the ticket for as long as the
-campaign runs:
+gives the campaign **a ticket cache of its own**: a copy of yours, at
+`/tmp/krb5cc_<uid>_randomdatastreams-<battery>`, renewed every 30 minutes by a
+`krenew` that no login owns, and named in the launcher:
 
 ```bash
-exec nice -n 10 ionice -c 3 /usr/bin/krenew -K 30 -- julia ... campaign.jl
+export KRB5CCNAME="FILE:/tmp/krb5cc_<uid>_randomdatastreams-bigcrush"
 ```
+
+Your own cache will not do wherever each login gets one —
+`/tmp/krb5cc_<uid>_XXXXXX`, made by `sshd` or `pam_sss` and destroyed at
+logout. A driver started under a `krenew` that inherited it fails with
+`No credentials cache found` once you have disconnected; a `krenew -b` started
+from your shell goes the same way; and `cron` never sees a `KRB5CCNAME` at all,
+and looks for `/tmp/krb5cc_<uid>`, which nobody made. That is what held up the
+first BigCrush sweep for six hours one night, the calibration finished and every
+core idle, with the watchdog failing every fifteen minutes. The NFS client needs
+no telling: `rpc.gssd` looks in `/tmp` for a cache you own whose name starts
+with `krb5cc_`. The watchdog brings the campaign's `krenew` back if it dies while
+the ticket still holds, and `stop` destroys the cache, which existed only for
+the campaign. Where your cache is not a file (`KEYRING:`, `KCM:`) there is
+nothing to copy, and the driver runs under `krenew` on the cache you have; such
+caches usually outlive a login, but check that yours does before leaving a sweep
+to run.
 
 Two limits are worth knowing before committing days to a sweep. First,
 **renewal has its own deadline**: a renewable ticket may be renewed only until
 the `renew until` that `klist -f` prints, typically some weeks after the
 `kinit` that created it, and a ticket that is not renewable at all cannot be
-rescued — `prepare` warns in both cases. A fresh login before a long campaign
-restarts that clock. Second, **the watchdog needs a ticket of its own**: the
-launcher's `krenew` runs only while the campaign does, and the watchdog exists
-for the times it does not. Keep one renewed independently of it:
-
-```bash
-krenew -K 30 -b        # a background daemon, renewing every 30 minutes
-```
+rescued — `prepare` warns in both cases. `prepare` and `start` copy the ticket
+you have at the time, so a fresh login followed by either restarts that clock.
+Second, **a reboot clears `/tmp`** on most machines, and the campaign's cache
+with it: the watchdog's `@reboot` line then cannot so much as enter `$HOME`, and
+the campaign waits for you to log in and run `start`.
 
 The alternative dissolves the question rather than answering it — put the
 checkout and the results on a filesystem that needs no ticket, such as local
