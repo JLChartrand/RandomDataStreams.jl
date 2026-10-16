@@ -333,16 +333,19 @@ identity included, on the `Float32` grid.
 
 **What it costs** is speed: Φ⁻¹ is a rational function of degree 7, and a
 logarithm in the tails, where the Ziggurat is mostly a table lookup and a
-multiplication. On one core of an Intel Core Ultra 9 285, a normal from
-Xoshiro256++ took about 4.5 ns more than the uniform under it, against 1.2 ns
-for the Ziggurat; for the counter-based generators and the MRGs, whose uniforms
-cost more, the two came out within 15% of each other. On a GPU the map runs in
-`Float64`, which a consumer card computes at a small fraction of its `Float32`
-rate: an RTX A1000 fills 0.6 billion normals a second, `Float64` or `Float32`,
-against 1.4 billion `Float64` and 30 billion `Float32` normals for
-[`randn_boxmuller!`](@ref). `randn32!` brings inversion to 12.4 billion
-`Float32` normals a second there (Philox4x32), with the CPU's values on the
-device as for `randn!`. For uses that need none of the properties above,
+multiplication. On one core of an Intel Core Ultra 9 285, measured while the
+other cores were busy, a normal from Xoshiro256++ took about 4.5 ns more than
+the uniform under it, against 1.2 ns for the Ziggurat; for the counter-based
+generators and the MRGs, whose uniforms cost more, the two came out within 15%
+of each other. On a GPU the map runs in `Float64`, which a consumer card
+computes at a small fraction of its `Float32` rate. An RTX A1000 fills about
+0.6 billion normals a second by inversion, `Float64` or `Float32`, against about
+1.4 billion `Float64` and 25 to 30 billion `Float32` normals for
+[`randn_boxmuller!`](@ref) — and 1.6 billion `Float64` for cuRAND's own
+Box-Muller, which meets the same `Float64` limit. `randn32!` brings inversion
+to about 11 billion `Float32` normals a second there (Philox4x32), with the
+CPU's values on the device as for `randn!`. On that card, power-limited at
+50 W, these rates vary by 10 to 20% from one run to the next. For uses that need none of the properties above,
 Julia's own `Xoshiro` keeps the Ziggurat, and `randn_boxmuller!` stays on the
 GPU.
 

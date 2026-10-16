@@ -26,8 +26,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   correctly rounded operations only -- an fdlibm logarithm instead of libm's or
   libdevice's, and every product feeding a sum written as an fma, since the GPU
   compiler fuses what the CPU's does not. A `Float32` normal is computed in
-  `Float64`, as on the CPU, which a consumer GPU runs slowly: 0.6 billion a
-  second on an RTX A1000.
+  `Float64`, as on the CPU, which a consumer GPU runs slowly: about 0.6 billion
+  a second on an RTX A1000.
 
 - **Box-Muller moves to `randn_boxmuller!`** (Philox4x32, `Float64` and
   `Float32`, as before), and **`randn_inversion!` is deprecated**: it forwards to
@@ -38,8 +38,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`randn32` and `randn32!`: single-precision normals by inversion**, the
   `Float32` Φ⁻¹ (AS 241's PPND7) of `rand(rng, Float32)`, in `Float32`
   arithmetic throughout, on every generator and, through the CUDA extension, on
-  a `CuArray{Float32}` with the CPU's values bit for bit. Twenty times
-  `randn!`'s `Float32` rate on an RTX A1000 (12.4 billion a second with
+  a `CuArray{Float32}` with the CPU's values bit for bit. About eighteen times
+  `randn!`'s `Float32` rate on an RTX A1000 (about 11 billion a second with
   Philox4x32), for tails that stop at ±5.29 instead of ±8.21. `norminv` on a
   `Float32` is this single-precision map.
 
