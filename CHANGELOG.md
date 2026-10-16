@@ -6,6 +6,37 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A campaign lost its Kerberos ticket at logout.** Where every login gets a
+  ticket cache of its own and loses it at logout, the launcher's `krenew`
+  inherited a cache that was gone by the time the driver started, and cron,
+  which has no `KRB5CCNAME`, found none at all: the first BigCrush sweep sat
+  idle for six hours with the watchdog failing every fifteen minutes.
+  `scripts/run-campaign.sh` now gives the campaign a cache of its own, copied
+  from yours, renewed by a `krenew` that no login owns, named in the launcher,
+  revived by the watchdog if it dies, and destroyed by `stop`.
+
+- **GNU time went "not found" now and then, and `--jobs` with it.** Under
+  `pipefail`, `time -v true | grep -q ...` fails whenever `grep -q` exits before
+  `time` has finished writing: one probe in eight, measured, on a binary sitting
+  in `~/.local/bin`. The calibration then had no peak RSS and fell back to
+  cores/4. The same race could report a renewable ticket as not renewable, and
+  keep `stop` from removing the watchdog; all four such pipelines now read
+  their input to the end.
+
+- **Kerberos went undetected on a results directory that did not exist yet**,
+  which is the usual case on a first `prepare`: the check now asks the nearest
+  directory that does.
+
+### Validation
+
+- **BigCrush over the whole matrix**, at v0.3.0: the seventeen generators,
+  BigCrush on the `single` and `interleaved` suites, Alphabit and Rabbit on
+  `bits`, 68 runs and 6409 statistics. No failure; eleven suspects against ≈12.8
+  expected, and none of their 33 replications on disjoint streams left
+  [0.001, 0.999]. See `docs/src/validation.md`.
+
 ## [0.3.0]
 
 Every float draw moves to the open interval `(0, 1)`, and the counter-based

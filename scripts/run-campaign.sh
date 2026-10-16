@@ -51,7 +51,8 @@
 # Kerberos. Where the checkout or the results sit on a krb5-secured filesystem
 # -- an NFS home, at most sites -- those files answer to a ticket rather than to
 # your uid, and a ticket is measured in hours while a campaign is measured in
-# days. `prepare` says so, and wraps the driver in krenew where it can.
+# days. `prepare` says so, and gives the campaign a copy of your ticket that
+# outlives your login, renewed by a krenew of its own; `stop` destroys it.
 
 set -euo pipefail
 
@@ -83,6 +84,13 @@ export TMUX_TMPDIR="${TMUX_TMPDIR:-$HOME/.cache/randomdatastreams-tmux}"
 say()  { printf '\n=== %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
+
+# `producer | grep -q pattern` is a race under pipefail: grep -q exits at the
+# first match, the producer may still be writing, and the SIGPIPE it gets fails
+# the whole pipeline -- so a line that is there reads as absent, now and then.
+# That is how GNU time went "not found" while it sat in ~/.local/bin. This
+# reads its input to the end.
+matches() { grep "$@" >/dev/null; }
 
 usage() {
     # the header block, however long it grows
@@ -192,10 +200,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # it can even start -- and none of that depends on whether anyone is logged in.
 # Tickets last hours and campaigns last days, so this is not a corner case; it
 # is what happens by default to a sweep left to run.
+#
+# The path need not exist yet -- `--out` usually does not on a first `prepare`
+# -- so the question is asked of the nearest directory that does.
 krb5_path() {
     have findmnt || return 1
-    local opts
-    opts=$(findmnt -T "$1" -no OPTIONS 2>/dev/null) || return 1
+    local p=$1 opts
+    while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
+    opts=$(findmnt -T "$p" -no OPTIONS 2>/dev/null) || return 1
     case ",$opts," in *,sec=krb5*) return 0 ;; *) return 1 ;; esac
 }
 
@@ -203,10 +215,95 @@ krb5_path() {
 # arguments. Set by check_kerberos, consumed by write_launcher.
 KRENEW=""
 
+# The cache the campaign runs on, which is not the one you logged in with.
+#
+# Where every login gets a cache of its own -- /tmp/krb5cc_<uid>_XXXXXX, made by
+# sshd or pam_sss and destroyed at logout -- a krenew renewing yours dies when
+# you disconnect, and so does a driver whose krenew inherited it: "No
+# credentials cache found", and the sweep stops. cron, for its part, never sees
+# a KRB5CCNAME and looks for /tmp/krb5cc_<uid>, which nobody made. So the
+# campaign gets a cache of its own, copied from yours and renewed by a krenew
+# that no login owns. The NFS client does not need to be told: rpc.gssd takes
+# any cache in /tmp that you own and whose name starts with krb5cc_, which is
+# also why one login can keep the mount readable after another has gone.
+campaign_cc()    { echo "/tmp/krb5cc_$(id -u)_randomdatastreams-$BATTERY"; }
+krenew_pidfile() { echo "$HOME/.cache/randomdatastreams/krenew-$BATTERY.pid"; }
+
+# Set by check_kerberos when the campaign has a cache of its own; consumed by
+# write_launcher, which names it there.
+CAMPAIGN_CC=""
+KERBEROS_CHECKED=0
+
+krenew_running() {
+    local pid
+    pid=$(cat "$(krenew_pidfile)" 2>/dev/null) || return 1
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# The file behind the cache klist reports, or failure when it is not a file:
+# a KEYRING: or KCM: cache cannot be copied, and usually outlives a login.
+current_cc_file() {
+    local listing cc
+    listing=$(LC_ALL=C klist 2>/dev/null) || return 1
+    cc=${listing#*Ticket cache: }
+    cc=${cc%%$'\n'*}
+    case "$cc" in
+        FILE:/*) cc=${cc#FILE:} ;;
+        /*)      ;;
+        *)       return 1 ;;
+    esac
+    [ -f "$cc" ] && printf '%s\n' "$cc"
+}
+
+# Quiet, and a no-op when one is already running, so that the watchdog can
+# call it from cron to bring back a krenew that died. -K is in minutes, and the
+# interval only has to be shorter than the ticket's lifetime, which is hours.
+# -t is AFS's, not ours, and krenew treats it as an error when AKLOG is unset.
+start_krenew() {
+    krenew_running && return 0
+    mkdir -p "$(dirname "$(krenew_pidfile)")"
+    krenew -k "FILE:$(campaign_cc)" -K 30 -b -p "$(krenew_pidfile)"
+}
+
+# Refreshes the campaign's cache from yours, and makes sure something renews
+# it. Fails when yours is not a file, and check_kerberos falls back to renewing
+# the cache you have.
+setup_campaign_cc() {
+    local src cc tmp
+    cc=$(campaign_cc)
+    src=$(current_cc_file) || return 1
+    if [ "$src" != "$cc" ]; then
+        tmp=$(mktemp "$cc.XXXXXX")          # mode 600, like any ticket cache
+        cp "$src" "$tmp"
+        mv -f "$tmp" "$cc"
+    fi
+    start_krenew || die "krenew would not start on $cc"
+    CAMPAIGN_CC=$cc
+    export KRB5CCNAME="FILE:$cc"
+}
+
+# For `stop`: the cache existed only for the campaign, so it goes with it.
+release_campaign_cc() {
+    local cc
+    cc=$(campaign_cc)
+    if krenew_running; then
+        kill "$(cat "$(krenew_pidfile)")" 2>/dev/null || true
+    fi
+    rm -f "$(krenew_pidfile)"
+    if [ -f "$cc" ]; then
+        kdestroy -c "FILE:$cc" 2>/dev/null || rm -f "$cc"
+        info "destroyed the campaign's ticket cache, $cc"
+    fi
+}
+
 # Nothing here parses a ticket's expiry. The format is a locale's business and
 # krenew already knows the arithmetic; all that is asked is whether a ticket
 # exists now and whether it may be renewed later.
 check_kerberos() {
+    # `run` is `prepare` then `start`, and both come through here
+    [ "$KERBEROS_CHECKED" -eq 1 ] && return 0
+    KERBEROS_CHECKED=1
+
     local guarded=()
     krb5_path "$REPO_ROOT" && guarded+=("the checkout, $REPO_ROOT")
     krb5_path "$OUT"       && guarded+=("the results, $OUT")
@@ -226,7 +323,7 @@ check_kerberos() {
        as soon as it started. Run 'kinit' and try again."
     fi
 
-    if ! LC_ALL=C klist 2>/dev/null | grep -q 'renew until'; then
+    if ! LC_ALL=C klist 2>/dev/null | matches 'renew until'; then
         info "WARNING: your ticket cannot be renewed, so the campaign will lose"
         info "         these files when it expires -- with no error you will see"
         info "         until you come back to a half-finished sweep. Either run"
@@ -243,11 +340,17 @@ check_kerberos() {
         return 0
     fi
 
-    # -K is in minutes, and the interval only has to be shorter than the
-    # ticket's lifetime, which is hours. -t is AFS's, not ours, and krenew
-    # treats it as an error when AKLOG is unset.
-    KRENEW="$(command -v krenew) -K 30 -- "
-    info "the driver will run under krenew, renewing every 30 minutes"
+    if setup_campaign_cc; then
+        info "the campaign has a ticket cache of its own, $CAMPAIGN_CC,"
+        info "copied from yours and renewed every 30 minutes by a krenew that no"
+        info "login owns, so logging out does not take it away. 'stop' destroys it."
+    else
+        KRENEW="$(command -v krenew) -K 30 -- "
+        info "your ticket cache is not a file, so the campaign cannot have a copy"
+        info "of its own: the driver will run under krenew on the cache you have,"
+        info "renewing every 30 minutes. Check that it outlives a logout before"
+        info "leaving a sweep to run."
+    fi
     info "note: renewal has its own deadline -- 'klist -f' shows 'renew until'."
     info "      A fresh kinit before a long sweep restarts that clock."
 }
@@ -377,7 +480,7 @@ gnu_time() {
              "$(command -v time 2>/dev/null || true)"; do
         case "$c" in /*) ;; *) continue ;; esac   # empty, or the shell keyword
         [ -x "$c" ] || continue
-        if "$c" -v true 2>&1 | grep -q 'Maximum resident set size'; then
+        if "$c" -v true 2>&1 | matches 'Maximum resident set size'; then
             echo "$c"
             return 0
         fi
@@ -453,9 +556,15 @@ write_launcher() {
     julia=$(command -v julia)
     mkdir -p "$OUT"
 
-    local krb_note=""
-    [ -n "$KRENEW" ] && krb_note="# krenew keeps the Kerberos ticket alive: these files are on a krb5
+    local krb_note="" krb_env=""
+    if [ -n "$CAMPAIGN_CC" ]; then
+        krb_note="# These files are on a krb5 filesystem. The campaign's own ticket cache,
+# renewed by its own krenew, outlives the login that started it."
+        krb_env="export KRB5CCNAME=\"FILE:$CAMPAIGN_CC\""
+    elif [ -n "$KRENEW" ]; then
+        krb_note="# krenew keeps the Kerberos ticket alive: these files are on a krb5
 # filesystem, and without it the driver loses them mid-sweep."
+    fi
 
     cat > "$(launcher)" <<EOF
 #!/usr/bin/env bash
@@ -466,6 +575,7 @@ export CAMPAIGN_OUT="$OUT"
 # Nice=10 and IOSchedulingClass=idle in the systemd unit; the same politeness
 # here, so a campaign never competes with interactive work or a benchmark.
 $krb_note
+$krb_env
 exec nice -n 10 ionice -c 3 ${KRENEW}"$julia" --startup-file=no \\
      scripts/testu01/campaign.jl --battery=$BATTERY --jobs=$JOBS --out="$OUT" $BITS_OPT
 EOF
@@ -633,12 +743,13 @@ install_watchdog() {
     info "your other cron jobs are untouched; removed again by:"
     info "  $0 stop --battery=$BATTERY"
 
-    # The launcher's own krenew does not help here: it only runs while the
-    # campaign does, and the watchdog exists for the times it does not. cron
-    # chdirs into $HOME before running anything, so an expired ticket stops it
-    # before it can read this script, and the only trace is a line in the
-    # system's cron log that says "chdir failed".
-    if krb5_path "$OUT" || krb5_path "$REPO_ROOT"; then
+    # cron chdirs into $HOME before running anything, so an expired ticket stops
+    # it before it can read this script, and the only trace is a line in the
+    # system's cron log that says "chdir failed". The campaign's own krenew
+    # covers that, since it runs whether or not the driver does; only without
+    # one -- a ticket cache that is not a file -- does the watchdog need a
+    # ticket kept some other way.
+    if [ -z "$CAMPAIGN_CC" ] && { krb5_path "$OUT" || krb5_path "$REPO_ROOT"; }; then
         info ""
         info "NOTE: cron cannot enter a krb5 filesystem without a live ticket,"
         info "      so the watchdog stops working the moment yours lapses. Keep"
@@ -649,7 +760,7 @@ install_watchdog() {
 
 remove_watchdog() {
     have crontab || return 0
-    crontab -l 2>/dev/null | grep -qF "$(cron_tag)" || return 0
+    crontab -l 2>/dev/null | matches -F "$(cron_tag)" || return 0
     info "removing the watchdog from your crontab"
     backup_crontab
     # Empty is allowed here, and is the common case: on a machine set aside for
@@ -683,6 +794,8 @@ EOF
 cmd_start() {
     resolve_supervisor
     is_running && die "already running -- '$0 status --battery=$BATTERY' to see it"
+    # a `stop` destroyed the campaign's ticket cache, and the launcher names it
+    check_kerberos
     start_supervised
     if [ "$WATCHDOG" -eq 1 ]; then
         install_watchdog
@@ -717,6 +830,11 @@ EOF
 # fifteen minutes later would make that instruction a lie.
 cmd_ensure() {
     resolve_supervisor >/dev/null 2>&1 || exit 0
+    # Bring back the campaign's krenew if it died, while its ticket still holds:
+    # the driver and the watchdog both depend on it, and nothing else renews it.
+    if [ -f "$(campaign_cc)" ] && klist -s -c "FILE:$(campaign_cc)" 2>/dev/null; then
+        start_krenew >/dev/null 2>&1 || true
+    fi
     is_running && exit 0
     [ -x "$(launcher)" ] || exit 0
     [ -f "$OUT/STOP" ] && exit 0
@@ -745,7 +863,7 @@ cmd_status() {
             ;;
     esac
 
-    if have crontab && crontab -l 2>/dev/null | grep -qF "$(cron_tag)"; then
+    if have crontab && crontab -l 2>/dev/null | matches -F "$(cron_tag)"; then
         info "watchdog: installed (restarts it if it stops, and at reboot)"
     fi
 
@@ -763,6 +881,7 @@ cmd_stop() {
     resolve_supervisor
     remove_watchdog          # or it would start the campaign again in 15 minutes
     stop_supervised
+    release_campaign_cc
     say "Stopped. Everything already finished is recorded in $OUT/summary.tsv"
 }
 
