@@ -70,12 +70,22 @@ philox4x32_counter
 open01
 ```
 
-The normal-variate fills below take their methods from the CUDA extension,
-loaded with CUDA.jl.
+## Normal and exponential variates
 
 ```@docs
-randn_inversion!
+norminv
+RandomDataStreams.Random.randn(::AbstractStreamableRNG)
+RandomDataStreams.Random.randexp(::AbstractStreamableRNG)
+```
+
+The GPU fills below take their methods from the CUDA extension, loaded with
+CUDA.jl. `randn!` and `randexp!` on a `CuArray` need no name of their own: they
+are the standard ones, and give the CPU's values.
+
+```@docs
+randn_boxmuller!
 randn_polar!
+randn_inversion!
 ```
 
 ### Functions

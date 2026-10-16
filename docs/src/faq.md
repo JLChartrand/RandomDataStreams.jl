@@ -138,9 +138,9 @@ reproduce a NumPy stream if you carry the state across, not if you carry only
 the seed.
 
 The distributions differ too. `rand(rng)` and `numpy`'s `random()` consume the
-same bits but not necessarily in the same way, and `randn` uses a different
-algorithm from NumPy's ziggurat. Only the raw generator output is guaranteed
-to agree.
+same bits but not necessarily in the same way, and `randn` draws by inversion
+where NumPy uses a Ziggurat. Only the raw generator output is guaranteed to
+agree.
 
 ## Why can't I choose PCG's increment to get more streams?
 
@@ -160,7 +160,17 @@ For the counter-based generators, yes. With CUDA.jl loaded, `rand!` fills a
 `CuArray{Float64}`, `CuArray{Float32}` or `CuArray{Float16}` on the device, bit
 for bit what the same call gives on the CPU from the same position, and leaves
 the generator object — which stays on the host — where the CPU fill would.
-`randn!` on a `CuArray` (Philox4x32 only) continues the same stream but uses
-Box-Muller, so its values differ from the CPU's `randn`. The recurrence-based
-generators assign and navigate streams on the host only. See
+`randn!` and `randexp!` do the same for normal and exponential variates, which
+every generator draws by inversion: the GPU's values are the CPU's. The
+recurrence-based generators assign and navigate streams on the host only. See
 [Streams & Substreams](streams.md).
+
+## Why does `randn` use inversion rather than the Ziggurat?
+
+Because the Ziggurat breaks what this package's streams are for. It takes a
+variable number of uniforms per normal, and builds a normal from different bits
+of one word, so reflecting a uniform does not negate a normal, two systems that
+share uniforms need not share normals, and a quasi-Monte Carlo point does not
+map to one normal per coordinate. Inversion, one uniform per normal through
+Φ⁻¹, has none of these problems, at a cost in speed. The comparison is tabulated
+in [Normal variates and variance reduction](streams.md#Normal-variates-and-variance-reduction).
