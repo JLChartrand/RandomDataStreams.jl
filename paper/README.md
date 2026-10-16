@@ -11,11 +11,10 @@ This branch exists only to carry the JOSS submission. It was created from
 
 ## Before submitting
 
-**Recreate this branch from the then-current `master`.** It was branched from
-`master` at a point where the PCG, Philox and Threefry work was still on the
-`Philox` branch, so the source code alongside this paper is not yet the code the
-paper describes. Once that work is merged, re-create `paper` from `master` and
-replay these files onto it.
+**Bring this branch up to the then-current `master`** if `master` has moved on
+since, so that the source code alongside the paper is the code it describes.
+The branch adds nothing outside `paper/`, so `git rebase master` replays it
+cleanly.
 
 Working material — the state-of-the-field dossier with its evidence, the
 editorial notes, the WSC paper — lives in the private companion repository
