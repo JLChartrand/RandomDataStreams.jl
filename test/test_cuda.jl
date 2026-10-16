@@ -98,9 +98,11 @@ end
         ("Threefry4x32-20", Threefry4x32RNG),
         ("Threefry4x64-20", Threefry4x64RNG),
     ]
-    for (name, G) in families, (fillfn, label) in ((randn!, "randn!"), (randexp!, "randexp!"))
+    for (name, G) in families, (fillfn, label, types) in ((randn!, "randn!", (Float64, Float32, Float16)),
+                                                          (randexp!, "randexp!", (Float64, Float32, Float16)),
+                                                          (randn32!, "randn32!", (Float32,)))
         @testset "$name $label" begin
-            for T in (Float64, Float32, Float16), pre in 0:4, n in (1, 2, 3, 5, 257, 10_001)
+            for T in types, pre in 0:4, n in (1, 2, 3, 5, 257, 10_001)
                 start = G(20261016)
                 for _ in 1:pre
                     rand(start, UInt32)
@@ -153,6 +155,19 @@ end
         @cuda threads = 256 blocks = cld(length(u), 256) _map_kernel!(out, f, CuArray(u))
         @test Array(out) == f.(u)
     end
+    # the single-precision pair, over every point of the Float32 grid and
+    # beyond it, subnormals included
+    u32 = vcat(Float32[(2k + 1) * 2.0^-24 for k in 0:(2^23 - 1)],
+               rand(rng, Float32, 100_000), Float32.(exp.(-80 .* rand(rng, 100_000))))
+    out32 = CUDA.zeros(Float32, length(u32))
+    @cuda threads = 256 blocks = cld(length(u32), 256) _map_kernel!(out32, norminv, CuArray(u32))
+    @test Array(out32) == norminv.(u32)
+    x32 = vcat(reinterpret.(Float32, rand(rng, 0x00000001:0x7f7fffff, 200_000)), rand(rng, Float32, 200_000),
+               [1f0, prevfloat(1f0), nextfloat(1f0), floatmin(Float32), nextfloat(0f0)])
+    out32 = CUDA.zeros(Float32, length(x32))
+    @cuda threads = 256 blocks = cld(length(x32), 256) _map_kernel!(out32, RandomDataStreams._log, CuArray(x32))
+    @test Array(out32) == RandomDataStreams._log.(x32)
+
     # and the logarithm under them: across every exponent, and densely over
     # (0, 1), where the maps call it -- a contraction the CPU does not make
     # first showed there, in one exponential in 200 000
@@ -233,6 +248,7 @@ end
         ("randn! Float16",            Float16, randn!),
         ("randexp! Float64",          Float64, randexp!),
         ("randexp! Float32",          Float32, randexp!),
+        ("randn32! Float32",          Float32, randn32!),
         ("randn_boxmuller! Float64",  Float64, randn_boxmuller!),
         ("randn_boxmuller! Float32",  Float32, randn_boxmuller!),
         ("randn_polar! Float64",      Float64, randn_polar!),

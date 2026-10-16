@@ -1392,6 +1392,12 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             # a draw continues the stream: what follows a normal is the next uniform
             r = mk(); randn(r); randexp(r)
             @test rand(r, Float64) == u[3]
+            # randn32: the single-precision map of the Float32 uniforms
+            u32 = (r = mk(); [rand(r, Float32) for _ in 1:9])
+            @test (r = mk(); [randn32(r) for _ in 1:9]) == norminv.(u32)
+            @test randn32!(mk(), Vector{Float32}(undef, 9)) == norminv.(u32)
+            r = mk(); randn32(r)
+            @test rand(r, Float32) == u32[2]
         end
 
         # moments, on the word grid and on the MRG's
@@ -1410,6 +1416,31 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             @test abs(R._log(x) - log(x)) <= eps(log(x))
         end
         @test R._log(0.0) == -Inf && R._log(Inf) == Inf && isnan(R._log(-1.0))
+
+        # single precision: the Float32 logarithm within an ulp of the Float64
+        # one rounded, and the Float32 Φ⁻¹ within 6 Float32 ulps of the Float64
+        # one -- the worst over every Float32 in (0, 1) is 5.4, in a tail no
+        # uniform of the grid reaches
+        for x in vcat(reinterpret.(Float32, rand(rng, 0x00000001:0x7f7fffff, 20_000)),
+                      rand(rng, Float32, 20_000), [1f0, prevfloat(1f0), floatmin(Float32), nextfloat(0f0)])
+            @test abs(Float64(R._log(x)) - log(Float64(x))) <= eps(Float32(log(Float64(x))))
+        end
+        for u in vcat(rand(rng, Float32, 20_000), Float32.(exp.(-60 .* rand(rng, 2_000))))
+            0 < u < 1 || continue
+            ref = norminv(Float64(u))
+            @test abs(Float64(norminv(u)) - ref) <= 6 * eps(Float32(abs(ref)))
+        end
+        @test R._log(0f0) == -Inf32 && R._log(Inf32) == Inf32 && isnan(R._log(-1f0))
+        @test norminv(0f0) == -Inf32 && norminv(1f0) == Inf32 && isnan(norminv(2f0))
+        # the Float32 grid is symmetric too, and its extremes give +-5.29
+        for k in vcat(0:999, rand(rng, 0:(2^23 - 1), 20_000))
+            u = Float32((2k + 1) * 2.0^-24)
+            @test norminv(1f0 - u) == -norminv(u)
+        end
+        @test norminv(Float32(2.0^-24)) ≈ -5.2947f0
+        @test randn32(next_stream!(PhiloxGen(3))) isa Float32
+        z32 = randn32!(next_stream!(PhiloxGen(3)), Vector{Float32}(undef, 400_000))
+        @test abs(sum(z32) / length(z32)) < 0.01 && abs(sum(abs2, z32) / length(z32) - 1) < 0.01
     end
 
 

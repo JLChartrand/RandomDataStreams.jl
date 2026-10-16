@@ -96,6 +96,59 @@ comment above. Within one ulp of `log`, and not meant to replace it elsewhere.
     end
 end
 
+# The Float32 logarithm, for `randn32`: the same algorithm in single precision,
+# as FreeBSD's msun e_logf.c has it -- "Float version of e_log.c. Conversion to
+# float by Ian Lance Taylor, Cygnus Support", under the notice above -- with
+# its four-term polynomial (|error| < 2^-34.24 on the reduced range), and the
+# same rule: every product feeding a sum is an fma.
+
+const _LN2_HI_F = reinterpret(Float32, 0x3f317180)        # 6.9313812256e-01
+const _LN2_LO_F = reinterpret(Float32, 0x3717f7d1)        # 9.0580006145e-06
+const _LGF1 = reinterpret(Float32, 0x3f2aaaaa)            # 0.66666662693
+const _LGF2 = reinterpret(Float32, 0x3eccce13)            # 0.40000972152
+const _LGF3 = reinterpret(Float32, 0x3e91e9ee)            # 0.28498786688
+const _LGF4 = reinterpret(Float32, 0x3e789e26)            # 0.24279078841
+
+@inline function _log(x::Float32)
+    x > 0 || return x == 0 ? -Inf32 : NaN32
+    x < Inf32 || return x
+    ix = reinterpret(UInt32, x) % Int
+    k = 0
+    if ix < 0x00800000                         # subnormal: scale into the normal range
+        x *= 3.3554432f7                       # 2^25
+        ix = reinterpret(UInt32, x) % Int
+        k = -25
+    end
+    k += (ix >> 23) - 127
+    ix &= 0x007fffff
+    i = (ix + (0x95f64 << 3)) & 0x800000
+    # 1 + f is x or x/2, whichever lies in [sqrt(2)/2, sqrt(2))
+    x = reinterpret(Float32, (ix | xor(i, 0x3f800000)) % UInt32)
+    k += i >> 23
+    f = x - 1f0
+    dk = Float32(k)
+    if (0x007fffff & (0x8000 + ix)) < 0xc000   # |f| < 2^-9
+        f == 0 && return k == 0 ? 0f0 : fma(dk, _LN2_HI_F, dk * _LN2_LO_F)
+        c = fma(-0.33333333333333333f0, f, 0.5f0)
+        k == 0 && return fma(-(f * f), c, f)
+        return fma(dk, _LN2_HI_F, -(fma(-dk, _LN2_LO_F, (f * f) * c) - f))
+    end
+    s = f / (2f0 + f)
+    z = s * s
+    w = z * z
+    t1 = w * fma(w, _LGF4, _LGF2)
+    R = fma(z, fma(w, _LGF3, _LGF1), t1)                     # t2 + t1
+    if ((ix - (0x6147a << 3)) | ((0x6b851 << 3) - ix)) > 0
+        hf = 0.5f0 * f
+        a = fma(hf, f, R)
+        k == 0 && return f - fma(-s, a, hf * f)
+        return fma(dk, _LN2_HI_F, -(fma(hf, f, -fma(s, a, dk * _LN2_LO_F)) - f))
+    else
+        k == 0 && return fma(-s, f - R, f)
+        return fma(dk, _LN2_HI_F, -(fma(s, f - R, -(dk * _LN2_LO_F)) - f))
+    end
+end
+
 # Φ⁻¹ -------------------------------------------------------------------------
 #
 # Wichura's algorithm AS 241, PPND16 (Applied Statistics 37, 1988, 477-484):
@@ -128,6 +181,16 @@ const _AS241_F = (1.0, 5.99832_20655_58879_37690e-1,
                   7.86869_13114_56132_59100e-4, 1.84631_83175_10054_68180e-5,
                   1.42151_17583_16445_88870e-7, 2.04426_31033_89939_78564e-15)
 
+# PPND7, the single-precision member of AS 241: the same three regions with
+# polynomials of degree 3 and 2, about 1e-7 relative error -- what a Float32
+# carries -- for `randn32`.
+const _PPND7_A = (3.3871327179f0, 5.0434271938f1, 1.5929113202f2, 5.9109374720f1)
+const _PPND7_B = (1f0, 1.7895169469f1, 7.8757757664f1, 6.7187563600f1)
+const _PPND7_C = (1.4234372777f0, 2.7568153900f0, 1.3067284816f0, 1.7023821103f-1)
+const _PPND7_D = (1f0, 7.3700164250f-1, 1.2021132975f-1)
+const _PPND7_E = (6.6579051150f0, 3.0812263860f0, 4.2868294337f-1, 1.7337203997f-2)
+const _PPND7_F = (1f0, 2.4197894225f-1, 1.2258202635f-2)
+
 # c[1] + x (c[2] + x (c[3] + ...)), each step an fma. Recursion over the
 # arguments rather than a loop over the tuple: it unrolls at compile time, and
 # a tuple indexed at run time spills to local memory in a GPU kernel.
@@ -148,7 +211,10 @@ IEEE 754 operations only, so a GPU gives the same bits as the CPU. Odd about
 1/2: `norminv(1 - u) == -norminv(u)` whenever `1 - u` is exact, which it is for
 every uniform the word generators return.
 
-A `Float32` or `Float16` argument is computed in `Float64` and rounded.
+A `Float32` argument is computed in single precision, by AS 241's PPND7 (about
+1e-7 relative error), with the same portability: that is what [`randn32`](@ref)
+uses. A `Float16` argument goes through the `Float32` method. For the `Float64`
+quantile of a narrower uniform, convert it first.
 """
 @inline function norminv(u::Float64)
     0 < u < 1 || return u == 0 ? -Inf : u == 1 ? Inf : NaN
@@ -167,7 +233,24 @@ A `Float32` or `Float16` argument is computed in `Float64` and rounded.
     end
     return q < 0 ? -z : z
 end
-@inline norminv(u::T) where {T<:Union{Float16,Float32}} = T(norminv(Float64(u)))
+@inline function norminv(u::Float32)
+    0 < u < 1 || return u == 0 ? -Inf32 : u == 1 ? Inf32 : NaN32
+    q = u - 0.5f0
+    if abs(q) <= 0.425f0
+        r = fma(-q, q, 0.180625f0)
+        return q * _horner(r, _PPND7_A...) / _horner(r, _PPND7_B...)
+    end
+    r = sqrt(-_log(q < 0 ? u : 1f0 - u))
+    z = if r <= 5f0
+        r -= 1.6f0
+        _horner(r, _PPND7_C...) / _horner(r, _PPND7_D...)
+    else
+        r -= 5f0
+        _horner(r, _PPND7_E...) / _horner(r, _PPND7_F...)
+    end
+    return q < 0 ? -z : z
+end
+@inline norminv(u::Float16) = Float16(norminv(Float32(u)))
 
 # The exponential's quantile function, increasing in u like Φ⁻¹.
 @inline _expinv(u::Float64) = -_log(1.0 - u)
@@ -216,6 +299,48 @@ function Random.randexp!(rng::AbstractStreamableRNG, A::Array{Float64})
     rand!(rng, A)
     @inbounds for i in eachindex(A)
         A[i] = _expinv(A[i])
+    end
+    return A
+end
+
+# Single-precision normals ------------------------------------------------------
+#
+# `randn(rng, Float32)` rounds the Float64 normal, as the standard library does:
+# a 64-bit uniform per normal, tails out to +-8.2, and Float64 arithmetic,
+# which a consumer GPU runs at a small fraction of its Float32 rate. `randn32`
+# is the other trade: the Float32 uniform `rand(rng, Float32)` gives, through
+# the single-precision Φ⁻¹ -- one 32-bit word per normal for the counter-based
+# families, and Float32 arithmetic throughout. Its tails stop at +-5.29, the
+# quantile of the Float32 grid's extreme 2^-24: the probability beyond, about
+# 1e-7, lands on the last point. Still one uniform per normal through a
+# monotone map, so everything in "Normal variates and variance reduction"
+# holds, the exact antithetic identity included, on the Float32 grid.
+
+"""
+    randn32(rng) -> Float32
+    randn32!(rng, A::AbstractArray{Float32}) -> A
+
+Single-precision standard normals by inversion: `norminv(rand(rng, Float32))`,
+computed in `Float32` throughout. Faster than `randn(rng, Float32)` on a GPU
+whose `Float64` rate is low -- the CUDA extension's `randn32!` gives the same
+values on a `CuArray` -- but its tails end at ±5.29, where `randn(rng, Float32)`,
+the `Float64` normal rounded, reaches ±8.21. One `rand(rng, Float32)` per
+normal: one 32-bit word for the counter-based generators, one step for the
+others.
+"""
+randn32(rng::AbstractStreamableRNG) = norminv(rand(rng, Float32))
+
+"""
+    randn32!(rng, A::AbstractArray{Float32}) -> A
+
+Fill `A` with [`randn32`](@ref) draws, in order: `norminv` of the `Float32`
+uniforms `rand!(rng, A)` would give. On a `CuArray`, the CUDA extension gives
+the same values.
+"""
+function randn32!(rng::AbstractStreamableRNG, A::AbstractArray{Float32})
+    rand!(rng, A)
+    @inbounds for i in eachindex(A)
+        A[i] = norminv(A[i])
     end
     return A
 end

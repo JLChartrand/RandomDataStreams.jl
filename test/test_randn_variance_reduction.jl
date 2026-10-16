@@ -51,7 +51,8 @@ Random.rand(w::Words, ::Random.SamplerType{UInt64}) =
         end
         @test norminv(0.0) == -Inf && norminv(1.0) == Inf
         @test isnan(norminv(-0.5)) && isnan(norminv(1.5)) && isnan(norminv(NaN))
-        @test norminv(0.975f0) === Float32(norminv(Float64(0.975f0)))
+        # the single-precision map, to its own accuracy
+        @test isapprox(norminv(0.975f0), Float32(norminv(Float64(0.975f0))); rtol = 4e-7)
     end
 
     @testset "norminv(1 - u) == -norminv(u), exactly, on the uniform grid" begin
@@ -67,6 +68,11 @@ Random.rand(w::Words, ::Random.SamplerType{UInt64}) =
         for k in 0:999
             u = (2k + 1) * 2.0^-53
             @test norminv(1 - u) == -norminv(u)
+        end
+        # and in single precision, on the Float32 grid of `randn32`
+        for k in 0:(2^23 - 1)
+            u = Float32((2k + 1) * 2.0^-24)
+            norminv(1f0 - u) == -norminv(u) || @test false
         end
     end
 

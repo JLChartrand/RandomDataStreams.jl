@@ -58,7 +58,7 @@ export PCG64, PCG64DXSM, PCG64Gen, PCG64DXSMGen
 export CBRNG, CBGen
 export PhiloxRNG, PhiloxGen
 export Philox4x64RNG, Philox4x64Gen
-export philox4x32_10, philox4x32_counter, open01, norminv
+export philox4x32_10, philox4x32_counter, open01, norminv, randn32, randn32!
 export Threefry4x64RNG, Threefry4x64Gen, Threefry4x32RNG, Threefry4x32Gen
 
 # GPU-only normal-variate algorithms, kept beside inversion -- which `randn!`

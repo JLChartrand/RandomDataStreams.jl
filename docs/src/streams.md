@@ -323,9 +323,13 @@ extreme normal is Φ⁻¹ of the extreme uniform. On the 53-bit grid of the word
 generators that is ±8.21. MRG32k3a's uniforms are multiples of ``1/(m_1 + 1)``,
 about ``2.3 \times 10^{-10}``, so its normals stay within ±6.23; MRG63k3a reaches
 −9.00 below and 8.21 above, where `Float64` runs out of resolution near 1. A
-`Float32` or `Float16` normal is the `Float64` one rounded, as in the standard
-library, so it keeps these tails rather than the ±5.3 a 24-bit uniform would
-allow.
+`Float32` or `Float16` normal from `randn` is the `Float64` one rounded, as in
+the standard library, so it keeps these tails. [`randn32`](@ref) is the other
+trade: the single-precision Φ⁻¹ of a `Float32` uniform, in `Float32` arithmetic
+throughout, whose tails stop at ±5.29 — the quantile of the `Float32` grid's
+extreme ``2^{-24}``, with the probability beyond it, about ``10^{-7}``, landing
+on that last point. It keeps every property in the table, the exact antithetic
+identity included, on the `Float32` grid.
 
 **What it costs** is speed: Φ⁻¹ is a rational function of degree 7, and a
 logarithm in the tails, where the Ziggurat is mostly a table lookup and a
@@ -336,7 +340,9 @@ cost more, the two came out within 15% of each other. On a GPU the map runs in
 `Float64`, which a consumer card computes at a small fraction of its `Float32`
 rate: an RTX A1000 fills 0.6 billion normals a second, `Float64` or `Float32`,
 against 1.4 billion `Float64` and 30 billion `Float32` normals for
-[`randn_boxmuller!`](@ref). For uses that need none of the properties above,
+[`randn_boxmuller!`](@ref). `randn32!` brings inversion to 12.4 billion
+`Float32` normals a second there (Philox4x32), with the CPU's values on the
+device as for `randn!`. For uses that need none of the properties above,
 Julia's own `Xoshiro` keeps the Ziggurat, and `randn_boxmuller!` stays on the
 GPU.
 

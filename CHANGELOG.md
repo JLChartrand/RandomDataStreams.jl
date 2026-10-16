@@ -35,6 +35,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`randn32` and `randn32!`: single-precision normals by inversion**, the
+  `Float32` Φ⁻¹ (AS 241's PPND7) of `rand(rng, Float32)`, in `Float32`
+  arithmetic throughout, on every generator and, through the CUDA extension, on
+  a `CuArray{Float32}` with the CPU's values bit for bit. Twenty times
+  `randn!`'s `Float32` rate on an RTX A1000 (12.4 billion a second with
+  Philox4x32), for tails that stop at ±5.29 instead of ±8.21. `norminv` on a
+  `Float32` is this single-precision map.
+
 - **`norminv(u)`**, the standard normal quantile function `randn` uses
   (Wichura's AS 241, relative error below 5e-16), exported so that the points of
   a randomized quasi-Monte Carlo rule, or a kernel's own uniforms, map the same

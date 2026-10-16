@@ -477,8 +477,19 @@ device fills against the CPU fills for the four counter-based families.
 The antithetic identity `norminv(1 - u) == -norminv(u)` is exact on the word
 generators' grid of odd multiples of ``2^{-53}``: `1 - u` and `u - 1/2` are
 exact there, and the rational function is computed from ``|u - 1/2|`` and its
-sign. A `Float32` or `Float16` normal is the `Float64` one rounded, as in the
-standard library.
+sign. A `Float32` or `Float16` normal from `randn` is the `Float64` one
+rounded, as in the standard library.
+
+`randn32` and `norminv(::Float32)` are the same construction in single
+precision: AS 241's PPND7, polynomials of degree 3 over 2 in the same three
+regions, and FreeBSD's `e_logf.c`, the `Float32` conversion of fdlibm's
+logarithm, with the same fma rule. Both were checked against the `Float64`
+versions over every `Float32` they accept: the logarithm within 0.854 ulp over
+all positive finite `Float32`, Φ⁻¹ within 5.4 `Float32` ulps over all of
+``(0, 1)`` — the worst near ``1.5 \times 10^{-11}``, in a tail no uniform of the
+``2^{-24}`` grid reaches — and the antithetic identity exact, and the map
+monotone, over all ``2^{23}`` points of that grid. The device gives the same
+bits over all of them.
 
 ## Testing strategy
 

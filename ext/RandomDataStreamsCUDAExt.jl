@@ -21,7 +21,8 @@
 #     either. A normal or exponential fill takes the k-th Float64 uniform through
 #     `norminv` or `-log(1 - u)`, which the package computes with correctly
 #     rounded operations only (src/normal.jl), and rounds it to the array's type:
-#     the CPU's `randn!` and `randexp!`, exactly. One thread per element.
+#     the CPU's `randn!` and `randexp!`, exactly. `randn32!` does the same in
+#     single precision from the Float32 uniforms. One thread per element.
 #
 #   * Box-Muller normals for Philox4x32, `randn_boxmuller!`, and Marsaglia's polar
 #     method, `randn_polar!`, kept for comparison with inversion. Their
@@ -39,7 +40,7 @@ module RandomDataStreamsCUDAExt
 using CUDA
 using Random: Random
 using RandomDataStreams: RandomDataStreams, CBRNG, PhiloxRNG, philox4x32_10, open01, norminv
-import RandomDataStreams: randn_inversion!, randn_polar!, randn_boxmuller!
+import RandomDataStreams: randn_inversion!, randn_polar!, randn_boxmuller!, randn32!
 
 # The block `b` (0-based) past the stream's current counter (base_hi, base_lo).
 @inline function _philox_block(key::NTuple{2,UInt32}, base_hi::UInt64, base_lo::UInt64, b)
@@ -63,14 +64,14 @@ function _fill_kernel!(A, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::In
     return nothing
 end
 
-# Element k of a fill by inversion: the k-th Float64 uniform the stream would
-# draw -- the one the CPU's `randn` or `randexp` would take -- through `f`, and
-# rounded to the array's type, as the CPU rounds a Float32 normal.
-function _invert_kernel!(A, f::F, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int,
-                         straddle::Val) where {F,G}
+# Element k of a fill by inversion: the k-th uniform of type U the stream would
+# draw -- the one the CPU's `randn`, `randexp` or `randn32` would take -- through
+# `f`, and rounded to the array's type, as the CPU rounds a Float32 normal.
+function _invert_kernel!(A, f::F, ::Type{U}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int,
+                         straddle::Val) where {F,U,G}
     k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
     if 0 <= k < n
-        u = RandomDataStreams._draw_at(Float64, G, key, hi, lo, w0, k, straddle)
+        u = RandomDataStreams._draw_at(U, G, key, hi, lo, w0, k, straddle)
         @inbounds A[k + 1] = convert(eltype(A), f(u))
     end
     return nothing
@@ -197,7 +198,7 @@ function Random.rand!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32
     return A
 end
 
-function _invert_fill!(f, rng::CBRNG, A::CuArray)
+function _invert_fill!(f, ::Type{U}, rng::CBRNG, A::CuArray) where {U}
     n = length(A)
     n == 0 && return A
     hi, lo, w0 = RandomDataStreams._draw_position(rng)
@@ -205,11 +206,11 @@ function _invert_fill!(f, rng::CBRNG, A::CuArray)
     threads = 256
     blocks = cld(n, threads)
     if isodd(w0)
-        @cuda threads = threads blocks = blocks _invert_kernel!(A, f, typeof(rng), rng.key, hi, lo, w0, n, Val(true))
+        @cuda threads = threads blocks = blocks _invert_kernel!(A, f, U, typeof(rng), rng.key, hi, lo, w0, n, Val(true))
     else
-        @cuda threads = threads blocks = blocks _invert_kernel!(A, f, typeof(rng), rng.key, hi, lo, w0, n, Val(false))
+        @cuda threads = threads blocks = blocks _invert_kernel!(A, f, U, typeof(rng), rng.key, hi, lo, w0, n, Val(false))
     end
-    RandomDataStreams._skip_draws!(rng, Float64, n)
+    RandomDataStreams._skip_draws!(rng, U, n)
     return A
 end
 
@@ -229,7 +230,7 @@ Carlo intact; [`randn_boxmuller!`](@ref) is the faster alternative that does
 not.
 """
 Random.randn!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}} =
-    _invert_fill!(norminv, rng, A)
+    _invert_fill!(norminv, Float64, rng, A)
 
 """
     Random.randexp!(rng::CBRNG, A::CuArray{T}) -> A    (T = Float64, Float32, Float16)
@@ -239,7 +240,18 @@ Fill `A` on the device with exponential variates of rate 1 by inversion,
 `randexp!` bit for bit, with the same contract as `randn!`.
 """
 Random.randexp!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}} =
-    _invert_fill!(RandomDataStreams._expinv, rng, A)
+    _invert_fill!(RandomDataStreams._expinv, Float64, rng, A)
+
+"""
+    randn32!(rng::CBRNG, A::CuArray{Float32}) -> A
+
+Fill `A` on the device with single-precision normals by inversion, the
+`Float32` [`norminv`](@ref) of the `Float32` uniforms the stream would draw
+next -- one word each -- and leave `rng` where the CPU's `randn32!` would: the
+same values, bit for bit, in `Float32` arithmetic throughout. The fast choice
+where `Float64` is slow; its tails end at ±5.29, where `randn!`'s reach ±8.21.
+"""
+randn32!(rng::CBRNG, A::CuArray{Float32}) = _invert_fill!(norminv, Float32, rng, A)
 
 """
     randn_boxmuller!(rng::PhiloxRNG, A::CuArray{Float64}) -> A

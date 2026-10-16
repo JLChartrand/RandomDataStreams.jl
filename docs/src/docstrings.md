@@ -76,6 +76,8 @@ open01
 norminv
 RandomDataStreams.Random.randn(::AbstractStreamableRNG)
 RandomDataStreams.Random.randexp(::AbstractStreamableRNG)
+randn32
+randn32!
 ```
 
 The GPU fills below take their methods from the CUDA extension, loaded with
