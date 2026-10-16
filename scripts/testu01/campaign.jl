@@ -18,6 +18,8 @@
 #                                         (default alphabit,rabbit)
 #   --bits=<n>                            size for alphabit/rabbit
 #   --suite=<suite>[,<suite>]|all         single, interleaved, bits; default all
+#   --shapes=<s>x<v>[,<s>x<v>]            interleaved shapes: s streams, v values
+#                                         from each in turn (default 64x1)
 #   --generator=<name>[,<name>]|all       default all
 #   --jobs=<n>                            concurrent processes (default: cores/4)
 #   --out=<dir>                           default testu01-results
@@ -26,9 +28,9 @@
 #   --list                                print what remains and exit
 #
 # Resuming. `summary.tsv` in the output directory is the record of finished
-# work: one line per (battery, suite, generator) that completed. Re-running the
-# same command skips those and does the rest. Interrupting loses only the jobs
-# actually in flight.
+# work: one line per (battery, suite, generator) that completed, and for the
+# interleaved suite per shape. Re-running the same command skips those and does
+# the rest. Interrupting loses only the jobs actually in flight.
 #
 # Stopping cleanly. `touch <out>/STOP` makes the driver stop launching new jobs
 # and wait for the running ones -- the way to end a campaign without throwing
@@ -66,6 +68,24 @@ const BIT_BATTERIES = ("alphabit", "rabbit")
 # passing the same name as `--battery` restores the old, uniform matrix.
 const BITS_BATTERIES = ["alphabit", "rabbit"]
 
+# The interleaved suite's shape: how many streams, and how many consecutive
+# values each one gives before the next one's turn, as `<streams>x<values>`.
+# This is validate.jl's default, and the only shape a campaign could run before
+# --shapes existed, so a summary line that records no shape ran this one.
+const DEFAULT_SHAPE = "64x1"
+
+function parse_shapes(v)
+    shapes = String.(split(v, ','))
+    for h in shapes
+        occursin(r"^[1-9][0-9]*x[1-9][0-9]*$", h) ||
+            error("a shape is <streams>x<values>, as in 256x2: $h")
+    end
+    return shapes
+end
+
+"The streams and values of a shape, as validate.jl's options take them."
+shape_parts(h) = split(h, 'x')
+
 # The generator list is `validate.jl`'s, read from it rather than duplicated, so
 # that adding a generator there adds it to the campaign.
 function generator_names()
@@ -82,7 +102,7 @@ function parse_args(args)
     opts = Dict{String,Any}("battery" => "", "suite" => "all",
                             "generator" => "all", "out" => "testu01-results",
                             "jobs" => max(1, Sys.CPU_THREADS ÷ 4), "bits" => "",
-                            "bits-battery" => BITS_BATTERIES,
+                            "bits-battery" => BITS_BATTERIES, "shapes" => [DEFAULT_SHAPE],
                             "calibrate" => false, "status" => false, "list" => false)
     for a in args
         if a in ("--calibrate", "--status", "--list")
@@ -93,7 +113,8 @@ function parse_args(args)
             k, v = a[3:i-1], a[i+1:end]
             haskey(opts, k) || error("unknown option: $a")
             opts[k] = k == "jobs" ? parse(Int, v) :
-                      k == "bits-battery" ? String.(split(v, ',')) : v
+                      k == "bits-battery" ? String.(split(v, ',')) :
+                      k == "shapes" ? parse_shapes(v) : v
         else
             error("unexpected argument: $a")
         end
@@ -119,6 +140,9 @@ which is why the matrix is no longer one job per (suite, generator).
 batteries_for(suite, opts) =
     suite == "bits" ? opts["bits-battery"] : [opts["battery"]]
 
+"The shapes a suite runs in: `--shapes` for `interleaved`, none for the others."
+shapes_for(suite, opts) = suite == "interleaved" ? opts["shapes"] : [""]
+
 # `all`, or a comma-separated list checked against what exists: a misspelt name
 # must stop the campaign before it starts, not fail one job hours into it.
 function selection(value, known, what)
@@ -133,12 +157,24 @@ end
 function matrix(opts)
     names  = selection(opts["generator"], generator_names(), "generator")
     suites = selection(opts["suite"], SUITES, "suite")
-    return [(b, s, g) for s in suites for g in names for b in batteries_for(s, opts)]
+    return [(b, s, g, h) for s in suites for h in shapes_for(s, opts)
+                         for g in names for b in batteries_for(s, opts)]
+end
+
+# A job is (battery, suite, generator, shape), the shape empty outside the
+# interleaved suite. Both summary files keep streams and values in columns 12
+# and 13; a line without them predates --shapes and ran the default.
+function job_key(fields)
+    b, s, g = String(fields[2]), String(fields[3]), String(fields[4])
+    s == "interleaved" || return (b, s, g, "")
+    st = length(fields) >= 13 ? fields[12] : ""
+    va = length(fields) >= 13 ? fields[13] : ""
+    return (b, s, g, isempty(st) || isempty(va) ? DEFAULT_SHAPE : "$(st)x$(va)")
 end
 
 "Finished jobs, from the consolidated index and from each job's own directory."
 function finished(out)
-    done = Set{Tuple{String,String,String}}()
+    done = Set{NTuple{4,String}}()
     for f in [joinpath(out, "summary.tsv");
               filter(isfile, [joinpath(root, "summary.tsv")
                               for (root, _, _) in walkdir(joinpath(out, "runs"), onerror = _ -> nothing)])]
@@ -146,22 +182,32 @@ function finished(out)
         for (i, line) in enumerate(eachline(f))
             i == 1 && startswith(line, "timestamp") && continue
             fields = split(line, '\t')
-            length(fields) >= 4 && push!(done, (fields[2], fields[3], fields[4]))
+            length(fields) >= 4 && push!(done, job_key(fields))
         end
     end
     return done
 end
 
-job_id(b, s, g) = "$(b)-$(s)-$(replace(g, r"[^\w]" => "_"))"
+function job_id(b, s, g, h)
+    gen = replace(g, r"[^\w]" => "_")
+    return isempty(h) ? "$(b)-$(s)-$(gen)" : "$(b)-$(s)-$(h)-$(gen)"
+end
+
+"One job as the logs and the status report show it."
+describe((b, s, g, h)) = @sprintf("%-9s %-17s %-16s", b, isempty(h) ? s : "$s $h", g)
 
 # Running one job as its own process -------------------------------------------
 
 function launch(job, opts)
-    b, s, g = job
-    dir = joinpath(opts["out"], "runs", job_id(b, s, g))
+    b, s, g, h = job
+    dir = joinpath(opts["out"], "runs", job_id(b, s, g, h))
     mkpath(dir)
     cmd = `$(Base.julia_cmd()) --startup-file=no $VALIDATE
            --battery=$b --suite=$s --generator=$g --out=$dir`
+    if !isempty(h)
+        st, va = shape_parts(h)
+        cmd = `$cmd --streams=$st --values=$va`
+    end
     # The size only means anything to the bit-level batteries, and validate.jl
     # rejects an option it does not expect, so it is passed only when it applies.
     if !isempty(opts["bits"]) && b in BIT_BATTERIES
@@ -182,15 +228,16 @@ function reap!(running, out, log)
             continue
         end
         close(r.io)
-        b, s, g = r.job
+        b, s, g, h = r.job
         elapsed = time() - r.started
         okay = success(r.proc)
-        note(log, @sprintf("%-9s %-12s %-16s %s in %s", b, s, g,
-                           okay ? "done" : "FAILED (exit $(r.proc.exitcode))", human(elapsed)))
+        note(log, string(describe(r.job), " ",
+                         okay ? "done" : "FAILED (exit $(r.proc.exitcode))", " in ", human(elapsed)))
+        st, va = isempty(h) ? ("", "") : shape_parts(h)
         okay && open(joinpath(out, "summary.tsv"), "a") do io
             println(io, join((now(), b, s, g, round(elapsed, digits = 1),
                               relpath(r.dir, out), VERSION, Sys.CPU_NAME,
-                              PROV.commit, PROV.dirty, PROV.version), '\t'))
+                              PROV.commit, PROV.dirty, PROV.version, st, va), '\t'))
         end
     end
     return still
@@ -233,8 +280,8 @@ function status(opts)
                 human(mean_t), opts["jobs"], human(mean_t * length(left) / opts["jobs"]))
     end
     isempty(left) || println("\nremaining:")
-    for (b, s, g) in left
-        @printf("  %-9s %-12s %s\n", b, s, g)
+    for j in left
+        println("  ", rstrip(describe(j)))
     end
     isfile(joinpath(out, "STOP")) && println("\nSTOP file present: the driver will not start new jobs.")
 end
@@ -249,7 +296,7 @@ function main(args)
     index = joinpath(out, "summary.tsv")
     isfile(index) || open(io -> println(io,
         "timestamp\tbattery\tsuite\tgenerator\tseconds\tdir\tjulia\tcpu\t" *
-        "commit\tdirty\tpkgversion"), index, "w")
+        "commit\tdirty\tpkgversion\tstreams\tvalues"), index, "w")
 
     if opts["status"]
         status(opts); return
@@ -285,7 +332,7 @@ function main(args)
             end
             while !stopping && !isempty(queue) && length(running) < opts["jobs"]
                 job = popfirst!(queue)
-                note(log, @sprintf("start  %-9s %-12s %s", job...))
+                note(log, "start  " * describe(job))
                 push!(running, launch(job, opts))
             end
             sleep(5)
