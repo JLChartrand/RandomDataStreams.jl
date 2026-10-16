@@ -30,21 +30,19 @@
 #     file for other sizes worth trying.
 #
 # CPU and GPU draw from independent `PhiloxRNG` instances seeded with the same
-# key. For the plain-uniform case their two buffers end up bit-identical after
-# a call (rand! into a CuArray{Float64} is built to match the CPU fill
-# exactly); for `exp` the two can differ in the last bit or two, since the CPU
-# and CUDA math libraries don't promise identical rounding; for `randn!` they
-# are expected to differ outright -- Box-Muller on the GPU, Ziggurat on the
-# CPU, deliberately different algorithms (see ext/RandomDataStreamsCUDAExt.jl).
+# key. For the plain-uniform case and for `randn!` their two buffers end up
+# bit-identical after a call: rand! into a CuArray{Float64} is built to match
+# the CPU fill exactly, and randn! is inversion on both, computed with the same
+# correctly rounded operations. For `exp` the two can differ in the last bit or
+# two, since the CPU and CUDA math libraries don't promise identical rounding.
 #
-# Three GPU-only normal-variate rows (branch philox-gpu-randn-test) put
-# `randn!` (Box-Muller), `randn_inversion!` (Phi^-1 via CUDA's `normcdfinv`),
-# and `randn_polar!` (Marsaglia's polar method, an accept-reject algorithm)
-# side by side against the *same* CPU Ziggurat baseline, so their relative
-# GPU cost is comparable directly from this one table. Do not read the "CPU"
-# column for those three as three different measurements -- it is the same
-# `randn!` timing repeated, included only so each row's speedup ratio is
-# self-contained. `randn_polar!`'s reservation of `_POLAR_BUDGET` Philox
+# Two GPU-only normal-variate rows put `randn_boxmuller!` (Box-Muller) and
+# `randn_polar!` (Marsaglia's polar method, an accept-reject algorithm) beside
+# inversion, against the *same* CPU `randn!` baseline, so their relative GPU
+# cost is comparable directly from this one table. Do not read the "CPU"
+# column for the three normal rows as three different measurements -- it is
+# the same `randn!` timing repeated, included only so each row's speedup ratio
+# is self-contained. `randn_polar!`'s reservation of `_POLAR_BUDGET` Philox
 # blocks per output pair (see its docstring) also means it advances the RNG
 # much further per call than the other two for the same `N` -- irrelevant to
 # a throughput number taken from a fresh generator each run, but relevant if
@@ -80,12 +78,12 @@ function run_case(N::Int, rows)
         ("sum(exp(u)), u ~ U(0,1)",
          () -> (rand!(cpu, cbuf); sum(exp, cbuf)),
          () -> (rand!(gpu, gbuf); sum(exp, gbuf))),
-        ("sum(n), n ~ N(0,1) [Box-Muller]",
-         () -> (randn!(cpu, cbuf); sum(cbuf)),
-         () -> (randn!(gpu, gbuf); sum(gbuf))),
         ("sum(n), n ~ N(0,1) [inversion]",
          () -> (randn!(cpu, cbuf); sum(cbuf)),
-         () -> (randn_inversion!(gpu, gbuf); sum(gbuf))),
+         () -> (randn!(gpu, gbuf); sum(gbuf))),
+        ("sum(n), n ~ N(0,1) [Box-Muller]",
+         () -> (randn!(cpu, cbuf); sum(cbuf)),
+         () -> (randn_boxmuller!(gpu, gbuf); sum(gbuf))),
         ("sum(n), n ~ N(0,1) [polar/accept-reject]",
          () -> (randn!(cpu, cbuf); sum(cbuf)),
          () -> (randn_polar!(gpu, gbuf); sum(gbuf))),
