@@ -42,7 +42,13 @@ shows up here and not in a battery run on a single stream.
 
 The heavier configurations recommended by the paper (up to 1024 streams and up
 to 8 values per stream) are reached through `--streams` and `--values` of
-`scripts/testu01/validate.jl`; a campaign runs the 64 × 1 shape.
+`scripts/testu01/validate.jl`. A campaign runs the 64 × 1 shape unless
+`--shapes` names others, one job per shape:
+
+```bash
+./scripts/run-campaign.sh run --battery=bigcrush --suite=interleaved \
+    --shapes=16x8,256x2,1024x1 --out=$HOME/bigcrush-shapes
+```
 
 ### Platform limitation
 
@@ -223,8 +229,10 @@ BigCrush, where a re-run would otherwise cost hours.
 run can be reproduced exactly; re-running a suite the ordinary way therefore
 reproduces the same p-values and settles nothing. `--skip` advances the stream
 generator past everything the original consumed — 1024 streams by default, well
-clear of the 64 the interleaved suite takes — so the replay is the independent
-replication the guide asks for. This is the package's own stream facility doing
+clear of the 64 the interleaved suite takes by default, and as many streams as a
+larger shape takes — so the replay is the independent replication the guide
+asks for. An interleaved suspect is replayed in the shape it arose in, which the
+replay reads from the run's log. This is the package's own stream facility doing
 the work the method requires.
 
 **The p-values come back exact.** A replay writes `replay-pvalues.tsv` beside
@@ -377,6 +385,15 @@ julia scripts/testu01/campaign.jl --battery=bigcrush --jobs=6
 `--battery` is required: there is deliberately no default, so that a stray
 invocation cannot start a two-week sweep.
 
+**A campaign need not run the whole matrix.** `--suite` keeps some of the three
+suites, and `--shapes=<streams>x<values>[,...]` gives the interleaved suite one
+job per shape. `run-campaign.sh` records both next to the results, so that
+`status`, `stop` and the watchdog work against the matrix that was started, and
+it refuses a different matrix in the same directory rather than mix the two.
+With `--jobs` given, `--skip-calibration` starts the sweep without first running
+one job alone to measure it — at BigCrush, hours during which every other core
+waits.
+
 **The `bits` leg does not run `--battery`.** Crush and BigCrush examine the 30
 most significant bits of a `U(0,1)` output, so over an integer stream they are
 the wrong instrument — running one there was what the campaign did for want of
@@ -388,7 +405,7 @@ two consume. `validate.jl` stays orthogonal — it runs any battery over any
 suite, and this pairing is the campaign's policy, not the library's.
 
 **Resuming is the point.** `summary.tsv` records one line per finished
-`(battery, suite, generator)`. Re-running the same command skips those and does
+`(battery, suite, generator)`, and for the interleaved suite per shape. Re-running the same command skips those and does
 the rest, so an interruption costs only the jobs actually in flight — never the
 weeks already spent. Each job also writes its own `summary.tsv` in its own
 directory, which the driver reconciles, so even a driver killed mid-flight
