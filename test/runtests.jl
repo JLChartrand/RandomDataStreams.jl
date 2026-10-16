@@ -1477,6 +1477,40 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             end
         end
 
+        # the same draws organised by block, as a kernel with one thread per block
+        # computes them: every block once, every draw whose first word lies in it,
+        # through the map a fill applies -- including a pair straddling two blocks
+        for G in (PhiloxRNG, Philox4x64RNG, Threefry4x32RNG, Threefry4x64RNG)
+            @testset "$(R._variant_name(G)) by block" begin
+                for (U, T, f) in ((Float64, Float64, identity), (Float32, Float32, identity),
+                                  (Float16, Float16, identity), (Float64, Float32, norminv),
+                                  (Float64, Float64, R._expinv), (Float32, Float32, norminv)),
+                    c in starts, pre in 0:5, n in (1, 2, 3, 5, 8, 13, 64)
+                    rng = G(12345)
+                    rng.ctr = c
+                    for _ in 1:pre
+                        rand(rng, UInt32)
+                    end
+                    hi, lo, w0 = R._draw_position(rng)
+                    W = eltype(rng.key)
+                    N = length(R._block_at(G, rng.key, hi, lo, UInt64(0)))
+                    expected = [convert(T, f(R._draw_at(U, G, rng.key, hi, lo, w0, k))) for k in 0:n-1]
+                    nb = R._blocks_spanned(U, W, N, w0, n)
+                    for S in (U === Float64 && W === UInt32 && isodd(w0) ? (true,) : (false, true))
+                        A = fill(T(NaN), n)
+                        for b in 0:nb-1
+                            R._fill_block!(A, f, U, G, rng.key, hi, lo, w0, n, b, Val(S))
+                        end
+                        @test isequal(A, expected)
+                    end
+                    # one block past the last writes nothing
+                    A = fill(T(NaN), n)
+                    R._fill_block!(A, f, U, G, rng.key, hi, lo, w0, n, nb, Val(true))
+                    @test all(isnan, A)
+                end
+            end
+        end
+
         # the (hi, lo) form of the counter words agrees with the UInt128 form
         for W in (UInt32, UInt64), c in (UInt128(0), typemax(UInt128),
                                          (UInt128(0x0123456789abcdef) << 64) | 0xfedcba9876543210)

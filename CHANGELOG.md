@@ -29,6 +29,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Float64`, as on the CPU, which a consumer GPU runs slowly: about 0.6 billion
   a second on an RTX A1000.
 
+- **GPU fills compute each block of the generator once.** A large `rand!` or
+  `randn32!` into a `CuArray` runs one thread per block of the counter-based
+  generator, writing every draw whose words lie in it, where one thread per
+  element recomputed the whole block for each word. On an RTX A1000, `rand!`
+  in `Float32` from Philox4x32 doubles to the memory bound (41 billion a
+  second, cuRAND's 45), the 64-bit ciphers run three to four times faster in
+  `Float32` (Threefry4x64 three times in `Float64` too, Philox4x64 1.4 times),
+  and `randn32!` 1.3 to 3 times. Fills under 2^16 blocks, and `randn!`/`randexp!`,
+  whose `Float64` inversion is the work, keep one thread per element. The
+  values do not change. `scripts/benchmarks/gpu_fills.jl` measures every fill.
+
 - **Box-Muller moves to `randn_boxmuller!`** (Philox4x32, `Float64` and
   `Float32`, as before), and **`randn_inversion!` is deprecated**: it forwards to
   `randn!`, which is inversion now.
