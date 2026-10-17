@@ -90,6 +90,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   expected, and none of their 33 replications on disjoint streams left
   [0.001, 0.999]. See `docs/src/validation.md`.
 
+- **The interleaved suite in three more shapes**, 16 × 8, 256 × 2 and 1024 × 1,
+  fixed before the sweep: 51 BigCrush runs at `a869931`, 8160 statistics, no
+  failure. Eighteen suspects against ≈16.3 expected, each replayed three times
+  in its own shape; the three series that did not scatter cleanly were
+  replicated twenty more times, all sixty values inside [0.001, 0.999]. No
+  suspect persists, and with 64 × 1 the interleaved suite has passed BigCrush in
+  four shapes. See `docs/src/validation.md`.
+
 ## [0.3.0]
 
 Every float draw moves to the open interval `(0, 1)`, and the counter-based
