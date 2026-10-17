@@ -1,0 +1,11 @@
+# Patch coverage is reported, not enforced. The CUDA extension runs only where
+# there is a GPU, which GitHub's runners do not have, so every pull request that
+# touches ext/RandomDataStreamsCUDAExt.jl shows those lines as missed although
+# test/test_cuda.jl covers them on a GPU machine (.buildkite/pipeline.yml, until
+# it uploads coverage of its own). Project coverage keeps Codecov's default
+# status: a drop there still counts.
+coverage:
+  status:
+    patch:
+      default:
+        informational: true
