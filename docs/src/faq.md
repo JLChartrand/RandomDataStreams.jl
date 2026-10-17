@@ -127,7 +127,7 @@ gives an identically zero output — so a new family whose bijection is weak for
 structured keys must override `stream_key` with a schedule that hashes the
 seed. See [Implementation Notes](implementation.md).
 
-## Can I reproduce cuRAND's Philox streams?
+## Can I reproduce cuRAND's Philox and MRG32k3a streams?
 
 Yes, word for word. cuRAND's `Philox4_32_10` is this package's `PhiloxRNG`: the
 seed is the key, its low 32 bits first, and cuRAND's subsequence is the
@@ -153,6 +153,17 @@ What carries over is the 32-bit words, not what is built on them. cuRAND's
 uses cuRAND's distributions therefore does not reproduce; one built on its words
 does, and a kernel of your own reaches any of them through
 [`philox4x32_10`](@ref) and [`philox4x32_counter`](@ref).
+
+cuRAND's `MRG32k3a` is this package's `MRG32k3a` too. Seed 0 is L'Ecuyer's
+published state, the one `MRG32k3a()` starts from; another seed sets each
+component to `12345·x mod m`, `x` being the seed's low half XOR `0x55555555` or
+its high half XOR `0xAAAAAAAA`, as `curand_init` does. Its subsequence `k` is the
+package's substream `k`, `k·2^76` steps in — `next_substream!` from `MRG32k3a()`
+for seed 0 — and the host API's default ordering takes output `n` from step
+`n ÷ 81920` of subsequence `n mod 81920`. Here what carries over is the
+combination `z` in `[1, m1]`: cuRAND's doubles are `z/m1`, which is `1.0` for
+`z = m1`, the package's `z/(m1 + 1)`, and its 32-bit integers are `z` scaled to
+`2^32 − 1`, not the package's.
 
 ## Can I reproduce a NumPy pipeline?
 

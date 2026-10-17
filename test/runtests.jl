@@ -1459,6 +1459,55 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "MRG32k3a reproduces cuRAND's MRG32k3a" begin
+        # Values cuRAND generated itself -- cuRAND 10.4 from CUDA 13.4, on an RTX
+        # A1000 -- as the combination z in [1, m1] that both libraries then
+        # scale: cuRAND by 1/m1, so that 1.0 can come out, the package by
+        # 1/(m1 + 1). Seed 0 is L'Ecuyer's published state, MRG32k3a()'s; any
+        # other seed goes through curand_init's map, below. cuRAND's subsequence
+        # k is the package's substream k, k * 2^76 steps in, and the host API's
+        # default ordering takes output n from step n ÷ 81920 of subsequence
+        # n mod 81920.
+        P = RandomDataStreams.PrivateMRGFuncs
+        z(g) = round(Int64, rand(g) * (P.m1 + 1))
+        function curand_state(seed::UInt64)
+            seed == 0 && return fill(12345, 6)
+            x1 = Int((seed % UInt32) ⊻ 0x55555555)
+            x2 = Int(((seed >> 32) % UInt32) ⊻ 0xaaaaaaaa)
+            return [x1 * 12345 % P.m1, x2 * 12345 % P.m1, x1 * 12345 % P.m1,
+                    x2 * 12345 % P.m2, x1 * 12345 % P.m2, x2 * 12345 % P.m2]
+        end
+        @test curand_state(UInt64(0)) == P.DEFAULT_SEED
+        # the host API, seed 1234: (subsequence, step, z)
+        for (sub, step, want) in ((0, 0, 3379073356), (1, 0, 653317619), (81919, 0, 928654624),
+                                  (0, 1, 2521875978), (5, 1, 2849003540))
+            g = MRG32k3a(curand_state(UInt64(1234)))
+            for _ in 1:sub
+                next_substream!(g)
+            end
+            for _ in 1:step
+                rand(g)
+            end
+            @test z(g) == want
+        end
+        # the device API, curand_init(seed, subsequence, offset), at
+        # subsequences no stream object reaches by stepping: by matrix powers
+        device = ((UInt64(0), 0, 0, [545508589, 1368065410, 1327943761, 3546985096, 951893194, 2290915636]),
+                  (0x0123456789abcdef, Int64(1) << 40, 5,
+                   [3778991753, 1268150770, 1171613253, 1698644673, 3187994983, 1733540227]),
+                  (typemax(UInt64), (Int64(1) << 51) - 1, 1_000_003,
+                   [247363440, 1587449149, 2546051061, 4243750324, 4174089990, 247032779]))
+        for (seed, sub, offset, want) in device
+            s = curand_state(seed)
+            s1 = P.MatVecModM(P.MatPowModM(P.A1p76, sub, P.m1), s[1:3], P.m1)
+            s2 = P.MatVecModM(P.MatPowModM(P.A2p76, sub, P.m2), s[4:6], P.m2)
+            g = MRG32k3a(vcat(s1, s2))
+            advance_state!(g, Int64(0), Int64(offset))
+            @test [z(g) for _ in 1:6] == want
+        end
+    end
+
+
     @testset "stateless addressing matches the stream object" begin
         # A counter-based draw must be recomputable from (key, substream,
         # index) alone, with no stream object: that identity is what lets a
