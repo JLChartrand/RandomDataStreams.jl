@@ -22,6 +22,27 @@ single_stream(rng) = () -> rand(rng, Float64)
     @test_throws ErrorException run_battery(() -> error("boom"), "guard")
 end
 
+@testset "the callback hands TestU01 what a native generator would" begin
+    # TestU01's own MRG32k3a and the package's give the same numbers from the
+    # published state, one from inside the library and one through the Julia
+    # callback every battery here goes through, so their SmallCrush statistics
+    # must agree double for double. A difference would mean the path itself
+    # changes what the batteries see. The native generator needs no callback,
+    # and runs where the closures do not.
+    native = TU01.withgen(TU01.ulec_mrg32k3a()) do g
+        silently(() -> TU01.smallcrush(g))
+    end
+    @test length(native) == 15
+    ours = check_smallcrush(() -> TU01.Gen(single_stream(MRG32k3a()), "MRG32k3a()"),
+                            "SmallCrush / MRG32k3a()")
+    ours === nothing || @test [s.p for s in native] == [s.p for s in ours]
+    # and TestU01's AES, the reference the CollisionOver calibration uses
+    aes = TU01.withgen(TU01.aes(UInt8.(1:16))) do g
+        silently(() -> TU01.smallcrush(g))
+    end
+    @test length(aes) == 15 && isempty(TU01.suspects(aes))
+end
+
 @testset "TestU01 SmallCrush Validation" begin
     # TestU01 tests take a bit of time, but validate the generator's statistical quality
     
