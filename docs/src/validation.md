@@ -360,6 +360,71 @@ that had not been singled out left the interval once: ClosePairs NP, t = 5, for
 in the replays — one extreme value in four, for a statistic unremarkable the
 first time, against ≈0.12 such lines expected among 60.
 
+### The interleaved suite in four shapes
+
+L'Ecuyer et al. (2021, §6) suggest a power of two between 16 and 1024 streams,
+and one to eight values from each in turn. The 28 power-of-two shapes in that
+range would be 476 BigCrush runs; three were fixed instead, before anything was
+computed — (16, 8), (256, 2) and (1024, 1), a diagonal from a few streams each
+giving a run of consecutive values to the most stream starts side by side, one
+value each. They ran at commit `a869931`, for the seventeen generators: 51
+BigCrush runs of the `interleaved` suite, on the same machine and 24 at a time,
+from 2.6 to 5.1 hours each. A suspect is replayed in the shape it arose in.
+
+| shape (streams × values) | runs | statistics | outside [0.001, 0.999] | failures |
+|---|---|---|---|---|
+| 16 × 8 | 17 | 2720 | 9 | 0 |
+| 64 × 1 (the sweep above) | 17 | 2720 | 5 | 0 |
+| 256 × 2 | 17 | 2720 | 4 | 0 |
+| 1024 × 1 | 17 | 2720 | 5 | 0 |
+
+Of the 8160 statistics of the three new shapes, **none was a failure**: the most
+extreme was 2.8 × 10⁻⁵ (`Xoshiro256ss`, 16 × 8, CollisionOver, t = 21). Eighteen
+were singled out, against ≈16.3 expected, and each was replayed three times in
+its own shape, on streams 1025 and up:
+
+| generator | shape | test | original | replay 1 | replay 2 | replay 3 |
+|---|---|---|---|---|---|---|
+| Xoshiro256ss | 16 × 8 | CollisionOver, t = 21 | 2.8 × 10⁻⁵ | 0.40 | 0.67 | 0.32 |
+| Xoroshiro128ss | 16 × 8 | MatrixRank, L = 5000 | 6.9 × 10⁻⁵ | 0.41 | 0.86 | 0.59 |
+| Philox4x32-10 | 16 × 8 | CollisionOver, t = 14 | 8.3 × 10⁻⁵ | 0.044 | 0.58 | 0.38 |
+| Xoroshiro128ss | 16 × 8 | RandomWalk1 J, L = 10000, r = 0 | 1.4 × 10⁻⁴ | 0.68 | 0.62 | 0.53 |
+| Xoshiro512pp | 256 × 2 | ClosePairs mNP2, t = 3 | 1 − 2.7 × 10⁻⁴ | 0.71 | 0.39 | 0.73 |
+| MRG32k3a | 16 × 8 | CollisionOver, t = 21 | 1 − 4.6 × 10⁻⁴ | 0.16 | 0.72 | 0.20 |
+| MRG63k3a | 256 × 2 | MaxOft, t = 8 | 1 − 5.1 × 10⁻⁴ | 0.49 | 0.44 | 0.21 |
+| Xoshiro256ss | 1024 × 1 | WeightDistrib, r = 28 | 5.9 × 10⁻⁴ | 0.076 | 0.68 | 0.21 |
+| Xoshiro512pp | 256 × 2 | RandomWalk1 J, L = 50, r = 25 | 6.2 × 10⁻⁴ | 0.75 | 0.37 | 0.26 |
+| Xoroshiro128pp | 1024 × 1 | SampleCorr, k = 2 | 6.3 × 10⁻⁴ | 0.34 | 0.16 | 0.13 |
+| Xoshiro512p | 1024 × 1 | BirthdaySpacings, t = 7 | 6.7 × 10⁻⁴ | 0.45 | 0.57 | 0.63 |
+| Xoroshiro128pp | 16 × 8 | SampleCorr, k = 2 | 7.6 × 10⁻⁴ | 0.76 | 0.64 | 1 − 1.1 × 10⁻³ |
+| MRG32k3a | 16 × 8 | RandomWalk1 J, L = 10000, r = 15 | 1 − 7.6 × 10⁻⁴ | 0.029 | 0.75 | 0.66 |
+| PCG64 | 16 × 8 | ClosePairs mNP2S, t = 16 | 8.3 × 10⁻⁴ | 0.27 | 0.31 | 0.83 |
+| Xoroshiro128p | 256 × 2 | MatrixRank, L = 5000 | 8.8 × 10⁻⁴ | 0.064 | 0.023 | 0.20 |
+| PCG64DXSM | 16 × 8 | MatrixRank, L = 30, r = 0 | 1 − 9.0 × 10⁻⁴ | 0.76 | 0.67 | 0.34 |
+| Xoshiro256p | 1024 × 1 | Permutation, t = 7 | 9.0 × 10⁻⁴ | 0.17 | **8.0 × 10⁻⁴** | 0.13 |
+| PCG64 | 1024 × 1 | RandomWalk1 J, L = 10000, r = 0 | 9.6 × 10⁻⁴ | 0.77 | 0.21 | 0.20 |
+
+The replays recompute 135 statistics, and one left the interval, against ≈0.27
+expected: the second replay of Permutation, t = 7, for `Xoshiro256p` at
+1024 × 1, on the same side as the original. Together with SampleCorr, k = 2, for
+`Xoroshiro128pp` — the only (generator, statistic) pair singled out in two
+shapes, against ≈0.03 such pairs expected, and whose last replay at 16 × 8 came
+close on the other side — that left three series that had not scattered cleanly
+enough to stop at three. Each was replicated twenty more times, on streams 2049
+and up (`replay.jl --skip=2048`), disjoint from the run and from the first
+replay:
+
+| generator | shape | test | min | median | max | Kolmogorov–Smirnov |
+|---|---|---|---|---|---|---|
+| Xoshiro256p | 1024 × 1 | Permutation, t = 7 | 0.034 | 0.47 | 0.997 | D = 0.14, p ≈ 0.81 |
+| Xoroshiro128pp | 16 × 8 | SampleCorr, k = 2 | 0.14 | 0.51 | 0.92 | D = 0.14, p ≈ 0.78 |
+| Xoroshiro128pp | 1024 × 1 | SampleCorr, k = 2 | 0.0020 | 0.54 | 0.95 | D = 0.11, p ≈ 0.97 |
+
+All sixty stayed inside [0.001, 0.999], and each series is consistent with
+uniformity: **no suspect persists**. With the 64 × 1 sweep, the interleaved
+suite has passed BigCrush in four shapes, 10 880 statistics, for every
+generator.
+
 ## Long campaigns: running for days without a session
 
 `validate.jl` runs one battery in one process, serially. That is the wrong shape
@@ -415,10 +480,11 @@ loses nothing that finished.
 for the running ones, which is how to end a campaign without discarding a
 battery that is twenty hours in. Ctrl-C does the same.
 
-**Surviving logout and reboot.** `nohup` survives a logout, `tmux` survives a
-logout and lets you reattach, and neither survives a reboot or restarts a driver
-that died. For a campaign measured in weeks, use the systemd *user* unit in
-`scripts/testu01/randomdatastreams-campaign.service`:
+**Surviving logout and reboot.** `setsid nohup` survives a logout; `tmux` does
+too and lets you reattach, unless it moves its panes into the systemd user
+manager ([below](#When-enable-linger-is-not-yours-to-run)); neither survives a
+reboot or restarts a driver that died. For a campaign measured in weeks, use the
+systemd *user* unit in `scripts/testu01/randomdatastreams-campaign.service`:
 
 ```bash
 loginctl enable-linger $USER          # user services keep running after logout
@@ -439,37 +505,56 @@ stop` lets the driver wait for its children rather than killing them, and
 That first line is the one that needs an administrator. Without it, systemd
 kills user services at logout, which is exactly what a two-week sweep must
 survive. On a shared machine the answer is often "no", so
-`scripts/run-campaign.sh` can supervise the campaign with **tmux** instead:
+`scripts/run-campaign.sh` can supervise the campaign without systemd:
 
 ```bash
-./scripts/run-campaign.sh run --battery=crush --supervisor=tmux --watchdog
+./scripts/run-campaign.sh run --battery=crush --supervisor=detached --watchdog
 ./scripts/run-campaign.sh status --battery=crush      # no flag needed afterwards
 ./scripts/run-campaign.sh stop   --battery=crush
 ```
 
-`--supervisor=auto`, the default, uses systemd when linger is on or can be
-turned on, and falls back to tmux. The choice is recorded in the output
-directory, so `status`, `stop` and `collect` find the campaign without being
-told again.
+`--supervisor=detached` starts the driver with `setsid nohup`, in a session of
+its own, and records its pid in `<out>/driver.pid`; its output goes to
+`<out>/supervisor.log`. `stop` sends `SIGINT` to its process group, which holds
+the jobs as well — what Ctrl-C does in a terminal. `--supervisor=auto`, the
+default, uses systemd when linger is on or can be turned on, and falls back to
+`detached`. The choice is recorded in the output directory, so `status`, `stop`
+and `collect` find the campaign without being told again, and a `start` that
+names another supervisor records that one instead.
 
-What tmux does not give you is what `--watchdog` restores, through a *user*
-crontab entry that needs no privileges:
+What neither gives you is what `--watchdog` restores, through a *user* crontab
+entry that needs no privileges:
 
-| | systemd unit | tmux | tmux + `--watchdog` |
+| | systemd unit | detached | detached + `--watchdog` |
 |---|---|---|---|
 | survives logout | with linger | yes, unless `KillUserProcesses=yes` | same |
 | survives a reboot | yes | no | yes (`@reboot`) |
 | restarts a driver that died | `Restart=on-failure` | no | yes, within 15 min |
-| attach and watch it work | `journalctl -f` | `tmux attach` | `tmux attach` |
+| watch it work | `journalctl -f` | `tail -f <out>/supervisor.log` | same |
+
+**tmux, where it still works.** `--supervisor=tmux` runs the driver in a
+detached tmux session you can attach to, and was the fallback until it took a
+BigCrush sweep down. A tmux built with systemd support — 3.6 on the machine
+where it happened — moves each pane it spawns into a scope of its own under the
+systemd user manager, `user@<uid>.service`, so that the pane outlives the
+terminal it came from. Without linger that manager is stopped when your last
+session ends, and every scope under it with it; `KillUserProcesses=no` does not
+help, since it spares what stays in a session's scope and the pane has left it.
+The last logout of 2026-10-16 took the driver and the 24 BigCrush jobs it was
+running, some five hours in. `start` now asks the pane where it landed, from
+`/proc/<pid>/cgroup`, and when that is under the user manager with linger off it
+stops the session again, before a job has started, and says to use `detached`.
+A detached driver stays in the scope of the login or the cron job that started
+it.
 
 Two details the script handles, both of which are silent failures otherwise.
-`KillUserProcesses=yes` in `logind.conf` kills a detached tmux session at logout
-just as it kills an unlingered service, so tmux is *not* a workaround on such a
-machine — `run-campaign.sh` reads the setting and says so before you commit two
-weeks to it. And tmux keeps its socket under `/run/user/$UID`, a directory that
-is removed when your last session ends; the script points `TMUX_TMPDIR` at a
-directory under `$HOME` instead, so the session started from your login shell
-and the one the watchdog looks for are the same session.
+`KillUserProcesses=yes` in `logind.conf` kills a detached driver or tmux session
+at logout just as it kills an unlingered service, so neither is a workaround on
+such a machine — `run-campaign.sh` reads the setting and says so before you
+commit two weeks to it. And tmux keeps its socket under `/run/user/$UID`, a
+directory that is removed when your last session ends; the script points
+`TMUX_TMPDIR` at a directory under `$HOME` instead, so the session started from
+your login shell and the one the watchdog looks for are the same session.
 
 The watchdog respects `touch <out>/STOP`: a campaign you stopped on purpose
 stays stopped. `stop` removes the crontab entry, and any crontab it edits is
@@ -530,6 +615,19 @@ Second, **a reboot clears `/tmp`** on most machines, and the campaign's cache
 with it: the watchdog's `@reboot` line then cannot so much as enter `$HOME`, and
 the campaign waits for you to log in and run `start`.
 
+**A lock that never wakes.** One more thing goes wrong on such a home, and has
+nothing to do with tickets. Every job used to begin with `Pkg.activate`, which
+writes `~/.julia/logs/manifest_usage.toml` under a pid lock and, while another
+process holds it, waits on a file watcher. Of 24 BigCrush jobs started within
+the same minute on an NFS home, six waited there for nine and a half hours,
+until they were killed: the watcher never fired. Julia prints a process's
+stacks on `kill -USR1 <pid>`, and again when `SIGTERM` kills it; all six stood
+at the same place. The driver resolves the environment once,
+before any job starts, so a job whose Manifest already points at the checkout
+now sets its active project directly and calls no Pkg at all. Only a stale
+Manifest still goes through Pkg, lock included, and the driver's own pass is
+what keeps it from being stale.
+
 The alternative dissolves the question rather than answering it — put the
 checkout and the results on a filesystem that needs no ticket, such as local
 scratch space:
@@ -570,9 +668,11 @@ Two things the suite cannot settle at SmallCrush level, and where the
 - **Dependence between streams.** The interleaved suite is the construction
   L'Ecuyer et al. (2021) call for, and the paper says batteries for
   counter-based generators still need development. BigCrush passed on it for
-  all seventeen generators, in the 64 × 1 shape; the heavier configurations the
-  paper suggests, up to 1024 streams and up to 8 values per stream, have not
-  been run at BigCrush.
+  all seventeen generators in [four shapes](#The-interleaved-suite-in-four-shapes),
+  from 16 streams of eight values to 1024 streams of one. For the counter-based
+  generators each of those streams has a key of its own; the other construction
+  the paper describes, the substreams of a single key — which is how cuRAND
+  hands out its Philox streams — has not been run.
 
 Results belong in the JOSS submission, not in CI.
 

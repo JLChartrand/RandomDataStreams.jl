@@ -13,6 +13,14 @@
 # Manifest does not already point at this checkout, which makes the second and
 # subsequent jobs free -- and `assert_checkout` verifies the outcome regardless
 # of which path was taken.
+#
+# Free means no Pkg at all, not even `Pkg.activate`. Activating records an undo
+# snapshot, and building it writes `~/.julia/logs/manifest_usage.toml` under a
+# pid lock. On an NFS home, of 24 BigCrush jobs started within the same minute,
+# six waited on that lock for nine and a half hours, until they were killed: the
+# file watcher that should have woken them never fired. A job whose Manifest is
+# already right sets the active project the way `Pkg.activate` does underneath,
+# and touches nothing in the depot.
 
 using Pkg, TOML
 
@@ -57,8 +65,10 @@ already arranged it, so concurrent jobs do not fight over the Manifest.
 """
 function ensure_checkout_env(scriptdir::AbstractString)
     root = repo_root(scriptdir)
-    Pkg.activate(scriptdir)
-    if !_manifest_current(scriptdir, root)
+    if _manifest_current(scriptdir, root)
+        Base.set_active_project(joinpath(scriptdir, "Project.toml"))
+    else
+        Pkg.activate(scriptdir)
         Pkg.develop(path = root)
         Pkg.instantiate()
     end
