@@ -20,7 +20,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   another matrix in the same directory. Its `--skip-calibration` starts a sweep
   with `--jobs` given without first running one job alone.
 
+- **A detached supervisor, now the fallback without linger.**
+  `scripts/run-campaign.sh --supervisor=detached` starts the driver with
+  `setsid nohup`, in a session of its own, records its pid in
+  `<out>/driver.pid`, and stops it with `SIGINT` to its process group, jobs
+  included. `--supervisor=auto` falls back to it rather than to tmux where
+  linger is refused, and the watchdog works with it as with tmux.
+
 ### Fixed
+
+- **A tmux supervisor died with the last logout.** A tmux built with systemd
+  support moves each pane into a scope under the systemd user manager, which
+  without linger is stopped, scopes and all, when the last session ends: on
+  2026-10-16 that took a BigCrush sweep's driver and its 24 jobs, five hours
+  in. `start` now looks where the pane landed and, under the user manager with
+  linger off, stops it again before a job has started and points to
+  `--supervisor=detached`. `start` also records the supervisor it starts, so
+  `status`, `stop` and the watchdog follow a campaign moved from one to another.
+
+- **Six jobs waited nine and a half hours on a Pkg lock.** Every job began with
+  `Pkg.activate`, which takes a pid lock on `~/.julia/logs/manifest_usage.toml`
+  and waits on a file watcher while another process holds it; on an NFS home,
+  six of 24 jobs started together were never woken. A job whose Manifest already
+  points at the checkout now sets its active project directly and calls no Pkg
+  at all, and so does every other script that goes through `scripts/env.jl`.
+
+- **A job killed by a signal was reported as `FAILED (exit 0)`**, since such a
+  process has no exit code of its own. `campaign.jl` now names the signal:
+  `FAILED (killed by SIGTERM)`.
 
 - **A replay of an interleaved suspect ran in the default shape.** `replay.jl`
   read the battery, suite, generator and bit count from a run's log but not its

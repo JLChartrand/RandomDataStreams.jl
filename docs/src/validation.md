@@ -415,10 +415,11 @@ loses nothing that finished.
 for the running ones, which is how to end a campaign without discarding a
 battery that is twenty hours in. Ctrl-C does the same.
 
-**Surviving logout and reboot.** `nohup` survives a logout, `tmux` survives a
-logout and lets you reattach, and neither survives a reboot or restarts a driver
-that died. For a campaign measured in weeks, use the systemd *user* unit in
-`scripts/testu01/randomdatastreams-campaign.service`:
+**Surviving logout and reboot.** `setsid nohup` survives a logout; `tmux` does
+too and lets you reattach, unless it moves its panes into the systemd user
+manager ([below](#When-enable-linger-is-not-yours-to-run)); neither survives a
+reboot or restarts a driver that died. For a campaign measured in weeks, use the
+systemd *user* unit in `scripts/testu01/randomdatastreams-campaign.service`:
 
 ```bash
 loginctl enable-linger $USER          # user services keep running after logout
@@ -439,37 +440,56 @@ stop` lets the driver wait for its children rather than killing them, and
 That first line is the one that needs an administrator. Without it, systemd
 kills user services at logout, which is exactly what a two-week sweep must
 survive. On a shared machine the answer is often "no", so
-`scripts/run-campaign.sh` can supervise the campaign with **tmux** instead:
+`scripts/run-campaign.sh` can supervise the campaign without systemd:
 
 ```bash
-./scripts/run-campaign.sh run --battery=crush --supervisor=tmux --watchdog
+./scripts/run-campaign.sh run --battery=crush --supervisor=detached --watchdog
 ./scripts/run-campaign.sh status --battery=crush      # no flag needed afterwards
 ./scripts/run-campaign.sh stop   --battery=crush
 ```
 
-`--supervisor=auto`, the default, uses systemd when linger is on or can be
-turned on, and falls back to tmux. The choice is recorded in the output
-directory, so `status`, `stop` and `collect` find the campaign without being
-told again.
+`--supervisor=detached` starts the driver with `setsid nohup`, in a session of
+its own, and records its pid in `<out>/driver.pid`; its output goes to
+`<out>/supervisor.log`. `stop` sends `SIGINT` to its process group, which holds
+the jobs as well — what Ctrl-C does in a terminal. `--supervisor=auto`, the
+default, uses systemd when linger is on or can be turned on, and falls back to
+`detached`. The choice is recorded in the output directory, so `status`, `stop`
+and `collect` find the campaign without being told again, and a `start` that
+names another supervisor records that one instead.
 
-What tmux does not give you is what `--watchdog` restores, through a *user*
-crontab entry that needs no privileges:
+What neither gives you is what `--watchdog` restores, through a *user* crontab
+entry that needs no privileges:
 
-| | systemd unit | tmux | tmux + `--watchdog` |
+| | systemd unit | detached | detached + `--watchdog` |
 |---|---|---|---|
 | survives logout | with linger | yes, unless `KillUserProcesses=yes` | same |
 | survives a reboot | yes | no | yes (`@reboot`) |
 | restarts a driver that died | `Restart=on-failure` | no | yes, within 15 min |
-| attach and watch it work | `journalctl -f` | `tmux attach` | `tmux attach` |
+| watch it work | `journalctl -f` | `tail -f <out>/supervisor.log` | same |
+
+**tmux, where it still works.** `--supervisor=tmux` runs the driver in a
+detached tmux session you can attach to, and was the fallback until it took a
+BigCrush sweep down. A tmux built with systemd support — 3.6 on the machine
+where it happened — moves each pane it spawns into a scope of its own under the
+systemd user manager, `user@<uid>.service`, so that the pane outlives the
+terminal it came from. Without linger that manager is stopped when your last
+session ends, and every scope under it with it; `KillUserProcesses=no` does not
+help, since it spares what stays in a session's scope and the pane has left it.
+The last logout of 2026-10-16 took the driver and the 24 BigCrush jobs it was
+running, some five hours in. `start` now asks the pane where it landed, from
+`/proc/<pid>/cgroup`, and when that is under the user manager with linger off it
+stops the session again, before a job has started, and says to use `detached`.
+A detached driver stays in the scope of the login or the cron job that started
+it.
 
 Two details the script handles, both of which are silent failures otherwise.
-`KillUserProcesses=yes` in `logind.conf` kills a detached tmux session at logout
-just as it kills an unlingered service, so tmux is *not* a workaround on such a
-machine — `run-campaign.sh` reads the setting and says so before you commit two
-weeks to it. And tmux keeps its socket under `/run/user/$UID`, a directory that
-is removed when your last session ends; the script points `TMUX_TMPDIR` at a
-directory under `$HOME` instead, so the session started from your login shell
-and the one the watchdog looks for are the same session.
+`KillUserProcesses=yes` in `logind.conf` kills a detached driver or tmux session
+at logout just as it kills an unlingered service, so neither is a workaround on
+such a machine — `run-campaign.sh` reads the setting and says so before you
+commit two weeks to it. And tmux keeps its socket under `/run/user/$UID`, a
+directory that is removed when your last session ends; the script points
+`TMUX_TMPDIR` at a directory under `$HOME` instead, so the session started from
+your login shell and the one the watchdog looks for are the same session.
 
 The watchdog respects `touch <out>/STOP`: a campaign you stopped on purpose
 stays stopped. `stop` removes the crontab entry, and any crontab it edits is
@@ -529,6 +549,19 @@ you have at the time, so a fresh login followed by either restarts that clock.
 Second, **a reboot clears `/tmp`** on most machines, and the campaign's cache
 with it: the watchdog's `@reboot` line then cannot so much as enter `$HOME`, and
 the campaign waits for you to log in and run `start`.
+
+**A lock that never wakes.** One more thing goes wrong on such a home, and has
+nothing to do with tickets. Every job used to begin with `Pkg.activate`, which
+writes `~/.julia/logs/manifest_usage.toml` under a pid lock and, while another
+process holds it, waits on a file watcher. Of 24 BigCrush jobs started within
+the same minute on an NFS home, six waited there for nine and a half hours,
+until they were killed: the watcher never fired. Julia prints a process's
+stacks on `kill -USR1 <pid>`, and again when `SIGTERM` kills it; all six stood
+at the same place. The driver resolves the environment once,
+before any job starts, so a job whose Manifest already points at the checkout
+now sets its active project directly and calls no Pkg at all. Only a stale
+Manifest still goes through Pkg, lock included, and the driver's own pass is
+what keeps it from being stale.
 
 The alternative dissolves the question rather than answering it — put the
 checkout and the results on a filesystem that needs no ticket, such as local

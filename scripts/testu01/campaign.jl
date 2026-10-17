@@ -231,8 +231,8 @@ function reap!(running, out, log)
         b, s, g, h = r.job
         elapsed = time() - r.started
         okay = success(r.proc)
-        note(log, string(describe(r.job), " ",
-                         okay ? "done" : "FAILED (exit $(r.proc.exitcode))", " in ", human(elapsed)))
+        note(log, string(describe(r.job), " ", okay ? "done" : failure(r.proc),
+                         " in ", human(elapsed)))
         st, va = isempty(h) ? ("", "") : shape_parts(h)
         okay && open(joinpath(out, "summary.tsv"), "a") do io
             println(io, join((now(), b, s, g, round(elapsed, digits = 1),
@@ -244,6 +244,17 @@ function reap!(running, out, log)
 end
 
 # Reporting --------------------------------------------------------------------
+
+# A job killed by a signal has no exit code of its own -- the field reads 0 --
+# so it is the signal that says what happened: SIGTERM from someone's `kill`,
+# SIGKILL from the OOM killer, SIGSEGV from a crash in C.
+const SIGNAL_NAMES = Dict(1 => "SIGHUP", 2 => "SIGINT", 6 => "SIGABRT", 9 => "SIGKILL",
+                          11 => "SIGSEGV", 15 => "SIGTERM")
+
+function failure(proc)
+    proc.termsignal == 0 && return "FAILED (exit $(proc.exitcode))"
+    return "FAILED (killed by $(get(SIGNAL_NAMES, proc.termsignal, "signal $(proc.termsignal)")))"
+end
 
 function human(seconds)
     seconds < 90 && return @sprintf("%.0f s", seconds)
