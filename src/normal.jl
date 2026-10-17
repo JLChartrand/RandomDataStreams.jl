@@ -312,7 +312,7 @@ end
 # computed once -- and the others draw eight uniforms onto the stack before
 # mapping them, which lets the eight inversions overlap. No allocation either
 # way, and the values are the scalar draws', in order. `randn32!`, whose
-# uniforms are Float32, takes the same two paths.
+# uniforms are Float32, takes these paths only where they win; see there.
 
 function _map_fill!(f::F, ::Type{U}, rng::AbstractStreamableRNG, A::Array{T}) where {F,U,T}
     n = length(A)
@@ -394,4 +394,12 @@ function randn32!(rng::AbstractStreamableRNG, A::AbstractArray{Float32})
     end
     return A
 end
-randn32!(rng::AbstractStreamableRNG, A::Array{Float32}) = _map_fill!(norminv, Float32, rng, A)
+# Its uniforms fit the destination, so `rand!` then Φ⁻¹ in place is the
+# default, and the right one wherever `rand!` fills Float32 at a fraction of the
+# cost of the inversion: on one P-core of a Core Ultra 9 285, 3.4 ns a value
+# from Xoshiro256++ this way against 4.0 in one pass, 5.7 against 6.0 from
+# Philox4x32. Where the uniforms are dear the one pass wins, by overlapping
+# the two: 9.4 ns against 11.8 from Threefry4x64, 7.2 against 8.4 from
+# Philox4x64, 8.4 against 8.9 from MRG32k3a.
+randn32!(rng::Union{CBRNG{<:Any,UInt64},MRG32k3a,MRG63k3a}, A::Array{Float32}) =
+    _map_fill!(norminv, Float32, rng, A)
