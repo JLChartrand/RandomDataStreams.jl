@@ -50,6 +50,24 @@ to 8 values per stream) are reached through `--streams` and `--values` of
     --shapes=16x8,256x2,1024x1 --out=$HOME/bigcrush-shapes
 ```
 
+**Substreams.** The paper describes two ways of making streams, and the
+interleaved suite tests one: every stream its own key, or its own jump, from
+`next_stream!`. The other is the substreams of a single stream, from
+`next_substream!` — for a counter-based generator one key and consecutive
+values of the counter's high half. That is the construction cuRAND uses:
+its Philox4_32_10 subsequences are `PhiloxRNG`'s substreams, word for word,
+and its MRG32k3a subsequences are MRG32k3a's substreams, 2^76 apart. The
+`substreams` suite interleaves substreams 1 to `--streams` of the first stream,
+in the same shapes, and replays a suspect on substreams of that same stream
+past those it used. A campaign runs it only when asked: `--suite=all` still
+means the three suites every earlier campaign ran, so their results directories
+resume unchanged.
+
+```bash
+./scripts/run-campaign.sh run --battery=bigcrush --suite=substreams \
+    --shapes=16x8,64x1,256x2,1024x1 --generator=Philox4x32-10,MRG32k3a
+```
+
 ### Platform limitation
 
 The batteries do not run on **Apple Silicon**. TestU01 is handed its callback

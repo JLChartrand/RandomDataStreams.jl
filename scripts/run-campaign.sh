@@ -28,9 +28,11 @@
 # --bits-battery to campaign.jl directly to change that.
 #
 # A campaign need not run the whole matrix. --suite=<suite>[,<suite>] keeps
-# some of single, interleaved and bits, and --shapes=<s>x<v>[,<s>x<v>] runs the
-# interleaved suite in each of those shapes -- s streams, v values from each in
-# turn -- instead of the default 64x1. Both are recorded next to the results,
+# some of single, interleaved and bits, or asks for substreams, which the whole
+# matrix leaves out; --shapes=<s>x<v>[,<s>x<v>] runs the interleaved and
+# substreams suites in each of those shapes -- s streams, v values from each in
+# turn -- instead of the default 64x1; --generator=<name>[,<name>] keeps some of
+# the generators. All three are recorded next to the results,
 # so that `status`, `stop` and the watchdog run against the same matrix without
 # being told again.
 #
@@ -82,7 +84,8 @@ BITS=""                     # size for the bit-level batteries; campaign.jl's de
 BITS_OPT=""                 # "--bits=N" when BITS is set, empty otherwise
 SUITE=""                    # suites to run; campaign.jl's default (all) applies when empty
 SHAPES=""                   # interleaved shapes; campaign.jl's default (64x1) applies when empty
-MATRIX_OPT=""               # the two above as campaign.jl options, recorded in $OUT/matrix
+GENERATOR=""                # generators to run; campaign.jl's default (all) applies when empty
+MATRIX_OPT=""               # the three above as campaign.jl options, recorded in $OUT/matrix
 SKIP_CALIBRATION=0
 OUT=""
 JOBS=""
@@ -145,6 +148,7 @@ parse_args() {
             --skip-calibration) SKIP_CALIBRATION=1 ;;
             --suite=*)        SUITE="${a#*=}" ;;
             --shapes=*)       SHAPES="${a#*=}" ;;
+            --generator=*)    GENERATOR="${a#*=}" ;;
             --allow-dirty)    ALLOW_DIRTY=1 ;;
             --supervisor=*)   SUPERVISOR="${a#*=}" ;;
             --watchdog)       WATCHDOG=1 ;;
@@ -164,6 +168,7 @@ parse_args() {
     if [ -n "$BITS" ]; then BITS_OPT="--bits=$BITS"; fi
     if [ -n "$SUITE" ]; then MATRIX_OPT="--suite=$SUITE"; fi
     if [ -n "$SHAPES" ]; then MATRIX_OPT="${MATRIX_OPT:+$MATRIX_OPT }--shapes=$SHAPES"; fi
+    if [ -n "$GENERATOR" ]; then MATRIX_OPT="${MATRIX_OPT:+$MATRIX_OPT }--generator=$GENERATOR"; fi
     resolve_matrix
 
     case "$SUPERVISOR" in
