@@ -616,3 +616,45 @@ mid-block because the caller has been mixing widths.
 
 Every generator draws with zero allocations, in both paths, as do `short_jump!`
 and `long_jump!`.
+
+### GPU fills
+
+Reproduce with `julia -O3 scripts/benchmarks/gpu_fills.jl`, which states its
+method in its header. Figures below are one run on an NVIDIA RTX A1000 (CUDA.jl
+6.4.2), a card power-limited at 50 W whose rates move by 10 to 20% from one run
+to the next: fills of ``2^{26}`` elements, billions of elements per second.
+
+| Generator | `rand!` `Float64` | `rand!` `Float32` | `randn!` (any type) | `randexp!` | `randn32!` |
+|---|---|---|---|---|---|
+| `Philox4x32-10` | 19.3 | 41.3 | 0.60 | 1.45 | 14.9 |
+| `Philox4x64-10` | 11.5 | 27.7 | 0.60 | 1.45 | 12.5 |
+| `Threefry4x32-20` | 7.1 | 14.2 | 0.60 | 1.44 | 10.6 |
+| `Threefry4x64-20` | 5.5 | 6.5 | 0.60 | 1.32 | 5.9 |
+
+For scale, on the same card: writing the array with `fill!` runs at 23.5
+(`Float64`) and 47.0 (`Float32`) billion elements a second, the memory bound;
+CUDA.jl's default `rand!` (cuRAND) at 20.7 and 45.1, and its `randn!`
+(Box-Muller) at 1.42 and 41.2; this package's `randn_boxmuller!` at 1.44 and
+24.6.
+
+What the table says. A uniform fill from Philox4x32 is at the memory bound, as
+cuRAND's is; the other three ciphers are bound by their own arithmetic — 64-bit
+multiplications and twenty rounds cost a GPU more than a CPU. Every `randn!` is
+at 0.6 whatever the generator, and whatever the output type: it is the `Float64`
+inversion, on a card that computes `Float64` at a small fraction of its
+`Float32` rate, and that limit is the card's — cuRAND's `Float64` Box-Muller
+meets it at 1.4. `randn32!` keeps inversion in `Float32` throughout and runs
+twenty to twenty-five times faster.
+
+A large uniform or `randn32!` fill runs one thread per block of the generator,
+computing each block once and writing every draw whose words lie in it; one
+thread per element, as before, computed the block once per word, four times for
+a `Float32` fill. That halved the `Float32` rate of Philox4x32, and cost the
+64-bit ciphers a factor of three to four in `Float32`. Below ``2^{16}`` blocks, and for the
+`Float64` inversions at every size, one thread per element is kept: it finishes
+small fills sooner, and the inversion, not the cipher, is then the work. Either
+kernel gives the same values; the test suite runs both against the CPU.
+
+A small fill is launch-bound: about 3 µs for a thousand uniforms from a process
+pinned to a performance core, 4 µs from an efficiency core — host time, which a
+GPU does not shorten.

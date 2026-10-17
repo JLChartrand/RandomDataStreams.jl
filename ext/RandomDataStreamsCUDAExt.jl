@@ -22,7 +22,10 @@
 #     `norminv` or `-log(1 - u)`, which the package computes with correctly
 #     rounded operations only (src/normal.jl), and rounds it to the array's type:
 #     the CPU's `randn!` and `randexp!`, exactly. `randn32!` does the same in
-#     single precision from the Float32 uniforms. One thread per element.
+#     single precision from the Float32 uniforms. A large uniform or Float32
+#     fill runs one thread per block of the generator, writing every draw whose
+#     words lie in it, so that the block is computed once rather than once per
+#     word; a small one, or a Float64 inversion, one thread per element.
 #
 #   * Box-Muller normals for Philox4x32, `randn_boxmuller!`, and Marsaglia's polar
 #     method, `randn_polar!`, kept for comparison with inversion. Their
@@ -53,22 +56,26 @@ end
 @inline _pair_lo(blk) = (UInt64(blk[2]) << 32) | UInt64(blk[1])
 @inline _pair_hi(blk) = (UInt64(blk[4]) << 32) | UInt64(blk[3])
 
-# Element k of a uniform fill: one thread per element, each computing the block
-# its word(s) come from. Every draw is independent of the launch configuration.
-# `straddle` is `Val(isodd(w0))`: see `_draw_at` for why it is a type parameter.
-function _fill_kernel!(A, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int, straddle::Val) where {G}
-    k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
-    if 0 <= k < n
-        @inbounds A[k + 1] = RandomDataStreams._draw_at(eltype(A), G, key, hi, lo, w0, k, straddle)
-    end
+# One thread per block of the generator: block b's draws, the block computed
+# once -- see `RandomDataStreams._fill_block!`, which the CPU test suite checks
+# against the position-addressed draws. Element k is the k-th uniform of type U
+# the stream would draw through `f` (`identity` for `rand!`, `norminv` or the
+# exponential map), rounded to the array's type, as the CPU rounds a Float32
+# normal. Every value is a function of the key, the counter and k alone, so the
+# launch configuration cannot change one. `straddle` is a type parameter for the
+# reason `_draw_at` gives.
+function _block_kernel!(A, f::F, ::Type{U}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int,
+                        nblocks::Int, straddle::Val) where {F,U,G}
+    b = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based block index
+    b < nblocks && RandomDataStreams._fill_block!(A, f, U, G, key, hi, lo, w0, n, b, straddle)
     return nothing
 end
 
-# Element k of a fill by inversion: the k-th uniform of type U the stream would
-# draw -- the one the CPU's `randn`, `randexp` or `randn32` would take -- through
-# `f`, and rounded to the array's type, as the CPU rounds a Float32 normal.
-function _invert_kernel!(A, f::F, ::Type{U}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int,
-                         straddle::Val) where {F,U,G}
+# One thread per element, each computing the block its word(s) come from:
+# the same values, with four times the threads. A small fill, which cannot
+# occupy the device with one thread per block, finishes sooner this way.
+function _element_kernel!(A, f::F, ::Type{U}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, n::Int,
+                          straddle::Val) where {F,U,G}
     k = (blockIdx().x - 1) * blockDim().x + threadIdx().x - 1     # 0-based output index
     if 0 <= k < n
         u = RandomDataStreams._draw_at(U, G, key, hi, lo, w0, k, straddle)
@@ -76,6 +83,54 @@ function _invert_kernel!(A, f::F, ::Type{U}, ::Type{G}, key, hi::UInt64, lo::UIn
     end
     return nothing
 end
+
+# Which kernel. One thread per block computes each block once, which pays when
+# the generator's arithmetic dominates and the fill spans enough blocks to keep
+# the device busy: on an RTX A1000, from about 2^16 blocks, where a Float32 fill
+# from Philox4x32 runs twice as fast and one from Threefry4x64 three to four
+# times. Below that one thread per element finishes sooner, and so it does at
+# every size when a Float64 inversion is the work -- randn!, randexp! -- since
+# the same normals spread over four times the threads. The values are the same
+# either way.
+const _PER_BLOCK_FROM = 1 << 16                          # blocks spanned
+
+_per_block(f, ::Type{U}, nblocks::Int) where {U} =
+    nblocks >= _PER_BLOCK_FROM && !(U === Float64 && f !== identity)
+
+# A fill of `A` with `f` of the uniforms of type U, and the host object left
+# where the CPU's fill would leave it. `per_block` forces a kernel, for the
+# tests; by default the size and the map choose.
+function _device_fill!(f::F, ::Type{U}, rng::CBRNG{B,W,N}, A::CuArray, per_block = nothing) where {F,U,B,W,N}
+    n = length(A)
+    n == 0 && return A
+    hi, lo, w0 = RandomDataStreams._draw_position(rng)
+    nblocks = RandomDataStreams._blocks_spanned(U, W, N, w0, n)
+    by_block = something(per_block, _per_block(f, U, nblocks))
+    # Two literal Vals, not Val(isodd(w0)), and `f::F` here and below: a Val
+    # built at run time, or a function Julia does not specialise on because it
+    # is only passed on, makes the launch type-unstable, and the kernel lookup
+    # that then runs on every call doubled the time of a small fill.
+    if U === Float64 && W === UInt32 && isodd(w0)         # the last pair of a block straddles
+        _launch_fill!(A, f, U, rng, hi, lo, w0, n, nblocks, by_block, Val(true))
+    else
+        _launch_fill!(A, f, U, rng, hi, lo, w0, n, nblocks, by_block, Val(false))
+    end
+    RandomDataStreams._skip_draws!(rng, U, n)
+    return A
+end
+
+function _launch_fill!(A, f::F, ::Type{U}, rng, hi, lo, w0, n, nblocks, by_block::Bool, straddle::Val) where {F,U}
+    threads = 256
+    if by_block
+        @cuda threads = threads blocks = cld(nblocks, threads) _block_kernel!(A, f, U, typeof(rng), rng.key,
+                                                                              hi, lo, w0, n, nblocks, straddle)
+    else
+        @cuda threads = threads blocks = cld(n, threads) _element_kernel!(A, f, U, typeof(rng), rng.key,
+                                                                          hi, lo, w0, n, straddle)
+    end
+    return nothing
+end
+
 
 # One thread per Philox block, writing up to two normals: Box-Muller applied
 # to the block's two uniforms. `open01` never returns 0, so `log(u1)` is finite.
@@ -178,41 +233,14 @@ from any position, mid-block included. A later draw, on either device,
 continues from there.
 
 A `Float64` takes two words of a 32-bit family and one word of a 64-bit family,
-a `Float32` or `Float16` one word of either, as on the CPU. Each element is
-computed by its own thread from the key and the counter alone, so the result
-does not depend on the launch configuration.
+a `Float32` or `Float16` one word of either, as on the CPU. Each is a function of
+the key, the counter and its index alone, so the result does not depend on the
+launch configuration -- nor on whether a large fill runs one thread per block of
+the generator, computing each block once, or a small one one thread per element.
+
 """
-function Random.rand!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}}
-    n = length(A)
-    n == 0 && return A
-    hi, lo, w0 = RandomDataStreams._draw_position(rng)
-
-    threads = 256
-    blocks = cld(n, threads)
-    if isodd(w0)
-        @cuda threads = threads blocks = blocks _fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n, Val(true))
-    else
-        @cuda threads = threads blocks = blocks _fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n, Val(false))
-    end
-    RandomDataStreams._skip_draws!(rng, T, n)
-    return A
-end
-
-function _invert_fill!(f, ::Type{U}, rng::CBRNG, A::CuArray) where {U}
-    n = length(A)
-    n == 0 && return A
-    hi, lo, w0 = RandomDataStreams._draw_position(rng)
-
-    threads = 256
-    blocks = cld(n, threads)
-    if isodd(w0)
-        @cuda threads = threads blocks = blocks _invert_kernel!(A, f, U, typeof(rng), rng.key, hi, lo, w0, n, Val(true))
-    else
-        @cuda threads = threads blocks = blocks _invert_kernel!(A, f, U, typeof(rng), rng.key, hi, lo, w0, n, Val(false))
-    end
-    RandomDataStreams._skip_draws!(rng, U, n)
-    return A
-end
+Random.rand!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}} =
+    _device_fill!(identity, T, rng, A)
 
 """
     Random.randn!(rng::CBRNG, A::CuArray{T}) -> A    (T = Float64, Float32, Float16)
@@ -230,7 +258,7 @@ Carlo intact; [`randn_boxmuller!`](@ref) is the faster alternative that does
 not.
 """
 Random.randn!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}} =
-    _invert_fill!(norminv, Float64, rng, A)
+    _device_fill!(norminv, Float64, rng, A)
 
 """
     Random.randexp!(rng::CBRNG, A::CuArray{T}) -> A    (T = Float64, Float32, Float16)
@@ -240,7 +268,7 @@ Fill `A` on the device with exponential variates of rate 1 by inversion,
 `randexp!` bit for bit, with the same contract as `randn!`.
 """
 Random.randexp!(rng::CBRNG, A::CuArray{T}) where {T<:Union{Float16,Float32,Float64}} =
-    _invert_fill!(RandomDataStreams._expinv, Float64, rng, A)
+    _device_fill!(RandomDataStreams._expinv, Float64, rng, A)
 
 """
     randn32!(rng::CBRNG, A::CuArray{Float32}) -> A
@@ -251,7 +279,7 @@ next -- one word each -- and leave `rng` where the CPU's `randn32!` would: the
 same values, bit for bit, in `Float32` arithmetic throughout. The fast choice
 where `Float64` is slow; its tails end at ±5.29, where `randn!`'s reach ±8.21.
 """
-randn32!(rng::CBRNG, A::CuArray{Float32}) = _invert_fill!(norminv, Float32, rng, A)
+randn32!(rng::CBRNG, A::CuArray{Float32}) = _device_fill!(norminv, Float32, rng, A)
 
 """
     randn_boxmuller!(rng::PhiloxRNG, A::CuArray{Float64}) -> A

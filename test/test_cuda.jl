@@ -56,6 +56,35 @@ else
         end
     end
 
+    @testset "both kernels, and the size that switches between them" begin
+        # A small fill runs one thread per element, a large one one thread per
+        # block of the generator; forced either way, the values and the host
+        # object must be the CPU's.
+        ext = Base.get_extension(RandomDataStreams, :RandomDataStreamsCUDAExt)
+        maps = ((identity, Float64, Float64), (identity, Float32, Float32), (identity, Float16, Float16),
+                (norminv, Float64, Float64), (norminv, Float64, Float32), (RandomDataStreams._expinv, Float64, Float64),
+                (norminv, Float32, Float32))
+        cpu_fill(f, U, rng, T, n) = [convert(T, f(rand(rng, U))) for _ in 1:n]
+        for (name, G) in families, (f, U, T) in maps, per_block in (false, true), pre in 0:4, n in (1, 2, 3, 5, 257, 10_001)
+            start = G(20261016)
+            for _ in 1:pre
+                rand(start, UInt32)
+            end
+            cpu, gpu = copy(start), copy(start)
+            want = cpu_fill(f, U, cpu, T, n)
+            got = Array(ext._device_fill!(f, U, gpu, CUDA.zeros(T, n), per_block))
+            isequal(got, want) && get_state(gpu)[1] == get_state(cpu)[1] && get_state(gpu)[4] == get_state(cpu)[4] ||
+                @test false
+        end
+        # large enough for the automatic choice to take the block kernel
+        for (name, G) in families, T in (Float32, Float64)
+            rng = G(7); rand(rng, UInt32)
+            n = 4 * ext._PER_BLOCK_FROM + 3
+            @test Array(rand!(copy(rng), CUDA.zeros(T, n))) == rand!(copy(rng), Vector{T}(undef, n))
+            @test Array(randn32!(copy(rng), CUDA.zeros(Float32, n))) == randn32!(copy(rng), Vector{Float32}(undef, n))
+        end
+    end
+
     @testset "does not depend on the launch configuration" begin
         # Each element is computed from (key, counter, index) alone, so the
         # number of threads per block cannot change a draw.
@@ -65,9 +94,11 @@ else
         hi, lo, w0 = RandomDataStreams._draw_position(rng)
         n = 5_003
         ref = rand!(copy(rng), Vector{Float64}(undef, n))
+        nb = RandomDataStreams._blocks_spanned(Float64, UInt32, 4, w0, n)
         for t in (32, 96, 256, 1024)
             A = CUDA.zeros(Float64, n)
-            @cuda threads = t blocks = cld(n, t) ext._fill_kernel!(A, typeof(rng), rng.key, hi, lo, w0, n, Val(isodd(w0)))
+            @cuda threads = t blocks = cld(nb, t) ext._block_kernel!(A, identity, Float64, typeof(rng), rng.key,
+                                                                     hi, lo, w0, n, nb, Val(isodd(w0)))
             @test Array(A) == ref
         end
     end
