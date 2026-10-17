@@ -27,6 +27,17 @@
 # says, since Crush and BigCrush were never built for an integer stream; pass
 # --bits-battery to campaign.jl directly to change that.
 #
+# A campaign need not run the whole matrix. --suite=<suite>[,<suite>] keeps
+# some of single, interleaved and bits, and --shapes=<s>x<v>[,<s>x<v>] runs the
+# interleaved suite in each of those shapes -- s streams, v values from each in
+# turn -- instead of the default 64x1. Both are recorded next to the results,
+# so that `status`, `stop` and the watchdog run against the same matrix without
+# being told again.
+#
+#   --skip-calibration    with --jobs=N, start without first running one job
+#                         alone to measure it. For BigCrush that one job takes
+#                         hours, during which every other core waits.
+#
 # Supervisors. A systemd user unit is the best of them -- it restarts a driver
 # that died and comes back after a reboot -- but it only outlives your login if
 # `loginctl enable-linger` has been run for your account, which on a shared
@@ -63,6 +74,10 @@ readonly TEMPLATE="$SCRIPT_DIR/testu01/randomdatastreams-campaign.service"
 BATTERY=""
 BITS=""                     # size for the bit-level batteries; campaign.jl's default applies when empty
 BITS_OPT=""                 # "--bits=N" when BITS is set, empty otherwise
+SUITE=""                    # suites to run; campaign.jl's default (all) applies when empty
+SHAPES=""                   # interleaved shapes; campaign.jl's default (64x1) applies when empty
+MATRIX_OPT=""               # the two above as campaign.jl options, recorded in $OUT/matrix
+SKIP_CALIBRATION=0
 OUT=""
 JOBS=""
 SKIP_BENCHMARK=0
@@ -102,6 +117,7 @@ unit_name() { echo "randomdatastreams-$BATTERY"; }
 unit_file() { echo "$HOME/.config/systemd/user/$(unit_name).service"; }
 session()   { echo "randomdatastreams-$BATTERY"; }
 sup_file()  { echo "$OUT/supervisor"; }
+matrix_file() { echo "$OUT/matrix"; }
 launcher()  { echo "$OUT/campaign-command.sh"; }
 # Not campaign.log: campaign.jl writes that one itself, through note(), while
 # the tmux supervisor pipes the same stdout through `tee`. Aimed at a single
@@ -119,6 +135,9 @@ parse_args() {
             --out=*)          OUT="${a#*=}" ;;
             --jobs=*)         JOBS="${a#*=}" ;;
             --skip-benchmark) SKIP_BENCHMARK=1 ;;
+            --skip-calibration) SKIP_CALIBRATION=1 ;;
+            --suite=*)        SUITE="${a#*=}" ;;
+            --shapes=*)       SHAPES="${a#*=}" ;;
             --allow-dirty)    ALLOW_DIRTY=1 ;;
             --supervisor=*)   SUPERVISOR="${a#*=}" ;;
             --watchdog)       WATCHDOG=1 ;;
@@ -136,6 +155,9 @@ parse_args() {
     esac
     OUT="${OUT:-$HOME/$BATTERY-results}"
     if [ -n "$BITS" ]; then BITS_OPT="--bits=$BITS"; fi
+    if [ -n "$SUITE" ]; then MATRIX_OPT="--suite=$SUITE"; fi
+    if [ -n "$SHAPES" ]; then MATRIX_OPT="${MATRIX_OPT:+$MATRIX_OPT }--shapes=$SHAPES"; fi
+    resolve_matrix
 
     case "$SUPERVISOR" in
         ""|auto|systemd|tmux) ;;
@@ -373,6 +395,21 @@ kill_user_processes() {
 
 # Sets SUPERVISOR when it is empty or `auto`, and checks the chosen one exists.
 #
+# The part of the matrix a campaign runs is recorded next to its results, as its
+# supervisor is, and for the same reason: `status` has to count what is left of
+# the matrix that was started, and the watchdog's `ensure` passes only --battery
+# and --out. Asking for another matrix in the same directory is refused rather
+# than mixed in with what is there.
+resolve_matrix() {
+    local recorded=""
+    [ -f "$(matrix_file)" ] && recorded=$(cat "$(matrix_file)")
+    if [ -z "$MATRIX_OPT" ]; then
+        MATRIX_OPT="$recorded"
+    elif [ -f "$(matrix_file)" ] && [ "$MATRIX_OPT" != "$recorded" ]; then
+        die "$OUT holds a campaign of ${recorded:-the whole matrix}, not $MATRIX_OPT -- give this one another --out"
+    fi
+}
+
 # A campaign that was started under tmux must still be visible to `status` and
 # stoppable by `stop` when those are called without the flag, so the choice is
 # recorded next to the results and read back here. Re-deriving it instead would
@@ -490,6 +527,13 @@ gnu_time() {
 
 # Sets JOBS, unless the caller already did.
 calibrate() {
+    if [ "$SKIP_CALIBRATION" -eq 1 ]; then
+        [ -n "$JOBS" ] || die "--skip-calibration needs --jobs=N: without a measured job there is nothing to size it from"
+        say "Skipping the calibration (--skip-calibration)"
+        info "jobs: $JOBS (you set it explicitly)"
+        return
+    fi
+
     say "Calibrating: one job of $BATTERY, measured"
 
     local log="$HOME/calibration-$BATTERY.txt"
@@ -503,7 +547,7 @@ calibrate() {
     if [ -n "$timer" ]; then
         [ "$timer" = /usr/bin/time ] || info "GNU time: $timer"
         "$timer" -v julia "$SCRIPT_DIR/testu01/campaign.jl" \
-            --battery="$BATTERY" --out="$OUT" $BITS_OPT --calibrate 2>&1 | tee "$log"
+            --battery="$BATTERY" --out="$OUT" $BITS_OPT $MATRIX_OPT --calibrate 2>&1 | tee "$log"
         peak_kb=$(awk '/Maximum resident set size/ {print $NF}' "$log" | tail -1)
     else
         info "GNU time not found, so the peak RSS cannot be measured and --jobs"
@@ -514,7 +558,7 @@ calibrate() {
         info "  tar xzf time-1.9.tar.gz && cd time-1.9"
         info "  ./configure --prefix=\$HOME/.local && make && make install"
         julia "$SCRIPT_DIR/testu01/campaign.jl" \
-            --battery="$BATTERY" --out="$OUT" $BITS_OPT --calibrate 2>&1 | tee "$log"
+            --battery="$BATTERY" --out="$OUT" $BITS_OPT $MATRIX_OPT --calibrate 2>&1 | tee "$log"
         peak_kb=""
     fi
 
@@ -577,10 +621,11 @@ export CAMPAIGN_OUT="$OUT"
 $krb_note
 $krb_env
 exec nice -n 10 ionice -c 3 ${KRENEW}"$julia" --startup-file=no \\
-     scripts/testu01/campaign.jl --battery=$BATTERY --jobs=$JOBS --out="$OUT" $BITS_OPT
+     scripts/testu01/campaign.jl --battery=$BATTERY --jobs=$JOBS --out="$OUT" $BITS_OPT $MATRIX_OPT
 EOF
     chmod +x "$(launcher)"
     printf '%s\n' "$SUPERVISOR" > "$(sup_file)"
+    printf '%s\n' "$MATRIX_OPT" > "$(matrix_file)"
     info "launcher: $(launcher)"
 }
 
@@ -657,7 +702,7 @@ install_unit() {
 
     sed -e "s|^WorkingDirectory=.*|WorkingDirectory=$REPO_ROOT|" \
         -e "s|^Environment=CAMPAIGN_OUT=.*|Environment=CAMPAIGN_OUT=$OUT|" \
-        -e "s|^ExecStart=.*|ExecStart=/usr/bin/env julia --startup-file=no scripts/testu01/campaign.jl --battery=$BATTERY --jobs=$JOBS --out=$OUT $BITS_OPT|" \
+        -e "s|^ExecStart=.*|ExecStart=/usr/bin/env julia --startup-file=no scripts/testu01/campaign.jl --battery=$BATTERY --jobs=$JOBS --out=$OUT $BITS_OPT $MATRIX_OPT|" \
         -e "/^ *--battery=bigcrush/d" \
         -e "s|^Description=.*|Description=RandomDataStreams.jl $BATTERY validation campaign|" \
         -e "s|^# --- edit these three.*|# --- generated by scripts/run-campaign.sh; re-run it rather than editing ---|" \
@@ -869,7 +914,7 @@ cmd_status() {
 
     say "Progress"
     julia "$SCRIPT_DIR/testu01/campaign.jl" \
-        --battery="$BATTERY" --out="$OUT" --status || true
+        --battery="$BATTERY" --out="$OUT" $MATRIX_OPT --status || true
 
     if [ -f "$OUT/summary.tsv" ]; then
         say "Finished jobs: $(( $(wc -l < "$OUT/summary.tsv") - 1 ))"

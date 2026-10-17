@@ -59,7 +59,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a randomized quasi-Monte Carlo rule, or a kernel's own uniforms, map the same
   way, with the same bits on a GPU.
 
+- **Campaigns over several interleaved shapes.** `scripts/testu01/campaign.jl`
+  takes `--shapes=<streams>x<values>[,...]` and runs the interleaved suite once
+  per shape, which is how the heavier configurations of L'Ecuyer et al. (2021)
+  — up to 1024 streams, up to 8 values per stream — reach a campaign rather than
+  one `validate.jl` call at a time. A finished job is now recognised by its
+  shape as well, and a summary line without one is read as the 64 × 1 shape
+  every earlier campaign ran, so existing results directories resume as before.
+  `scripts/run-campaign.sh` passes `--suite` and `--shapes` through, records
+  them next to the results for `status`, `stop` and the watchdog, and refuses
+  another matrix in the same directory. Its `--skip-calibration` starts a sweep
+  with `--jobs` given without first running one job alone.
+
 ### Fixed
+
+- **A replay of an interleaved suspect ran in the default shape.** `replay.jl`
+  read the battery, suite, generator and bit count from a run's log but not its
+  streams and values, so a suspect from any shape but 64 × 1 would have been
+  replayed in 64 × 1. It now reads them from the log's header, and skips at
+  least as many streams as the run used, so that a shape over 1024 streams still
+  replays on disjoint output. No campaign so far ran another shape.
+
+- **A second replay took the first one's log for the run.** A replay writes its
+  log beside the run's, ending with the same summary line, and was the newest
+  complete log there; `replay.jl` now passes over replay logs when it picks the
+  run's.
 
 - **A campaign lost its Kerberos ticket at logout.** Where every login gets a
   ticket cache of its own and loses it at logout, the launcher's `krenew`

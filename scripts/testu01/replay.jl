@@ -11,7 +11,8 @@
 #
 # A bit-level battery (alphabit, rabbit) also needs the number of bits the
 # original run consumed: --log reads it from the log's header, otherwise pass
-# --bits.
+# --bits. So does the interleaved suite's shape, its streams and values: a
+# suspect is replayed in the shape it arose in, never in the default one.
 #
 # Why this exists. A summary report lists every p-value outside
 # [0.001, 0.999], which is `gofw_Suspectp` and nothing more than a printing
@@ -55,7 +56,8 @@ known_battery(battery::AbstractString) = haskey(TU01.NTESTS, Symbol(battery))
 # Past everything any suite of the campaign consumes: `single` and `bits` take
 # stream 1, `interleaved` takes 1..streams (64 by default). A round number well
 # clear of both is easier to reason about later than a computed minimum, and
-# advancing a stream is a jump-ahead, not a draw -- it costs nothing.
+# advancing a stream is a jump-ahead, not a draw -- it costs nothing. A shape
+# with more streams than that skips as many streams as it has.
 const DEFAULT_SKIP = 1024
 
 """
@@ -109,7 +111,11 @@ directory is the useful thing to do: a run that was restarted leaves several
 logs there and only the last one ran to the end.
 """
 function newest_finished(dir::AbstractString)
-    logs = filter(f -> endswith(f, ".log") && !endswith(f, "driver.log"),
+    # A replay writes its own log next to the run's, and that log ends with the
+    # same summary line: left in, a second replay would take the first one's
+    # output for the run it is meant to replicate.
+    logs = filter(f -> endswith(f, ".log") && !endswith(f, "driver.log") &&
+                       !occursin("-replay-", basename(f)),
                   joinpath.(dir, readdir(dir)))
     done = filter(finished, logs)
     isempty(done) && error("no complete battery log in $dir " *
@@ -133,6 +139,21 @@ function log_bits(log::AbstractString)
         m === nothing || return parse(Float64, m[1])
     end
     return 0.0
+end
+
+"""
+    log_shape(log) -> (streams, values) or nothing
+
+The interleaved suite's shape, from the `# S streams, V value(s) each` line
+validate.jl writes into the header of an interleaved run's log.
+"""
+function log_shape(log::AbstractString)
+    for line in eachline(log)
+        startswith(line, "#") || break
+        m = match(r"^#\s*([0-9]+) streams, ([0-9]+) value", line)
+        m === nothing || return parse(Int, m[1]), parse(Int, m[2])
+    end
+    return nothing
 end
 
 """
@@ -173,7 +194,7 @@ end
 
 function parse_args(args)
     opts = (log = "", battery = "", suite = "", generator = "", tests = Int[],
-            reps = 3, skip = DEFAULT_SKIP, streams = 64, values = 1, bits = 0.0,
+            reps = 3, skip = nothing, streams = nothing, values = nothing, bits = 0.0,
             out = "", list = false)
     for a in args
         if a == "--list"
@@ -216,7 +237,18 @@ function parse_args(args)
         isempty(opts.tests)     && (opts = merge(opts, (tests = first.(suspects(opts.log)),)))
         isempty(opts.out)       && (opts = merge(opts, (out = dirname(opts.log),)))
         opts.bits == 0          && (opts = merge(opts, (bits = log_bits(opts.log),)))
+        shape = opts.suite == "interleaved" ? log_shape(opts.log) : nothing
+        if shape !== nothing
+            opts.streams === nothing && (opts = merge(opts, (streams = shape[1],)))
+            opts.values === nothing  && (opts = merge(opts, (values = shape[2],)))
+        end
     end
+    opts = merge(opts, (streams = something(opts.streams, 64), values = something(opts.values, 1)))
+    # The run drew from streams 1..streams (1 outside the interleaved suite), and
+    # the replay draws from skip+1 onwards: fewer skipped than used would repeat
+    # some of the run's output, which is what a replay exists to avoid.
+    used = opts.suite == "interleaved" ? opts.streams : 1
+    opts = merge(opts, (skip = something(opts.skip, max(DEFAULT_SKIP, used)),))
 
     isempty(opts.battery) && error("--battery is required (or --log, which carries it)")
     known_battery(opts.battery) || error("unknown battery: $(opts.battery)")
@@ -224,7 +256,8 @@ function parse_args(args)
     isempty(opts.generator) && error("--generator is required (or --log)")
     isempty(opts.out) && (opts = merge(opts, (out = "testu01-results",)))
     opts.reps >= 1 || error("--reps must be at least 1")
-    opts.skip >= 1 || error("--skip must be at least 1: the point is disjoint output")
+    opts.skip >= used || error("--skip must be at least $used, the streams the run drew " *
+                               "from: the point is disjoint output")
     if opts.battery in BIT_BATTERIES && opts.bits <= 0
         error("$(opts.battery) consumes a fixed number of bits, and a replay has to " *
               "consume the same number as the run it replicates. Pass --bits, or " *
@@ -260,6 +293,8 @@ function main(args)
     println("replaying tests ", join(opts.tests, ", "), ", ", opts.reps, " time(s) each")
     opts.battery in BIT_BATTERIES && @printf("%.0f bits per replication, as the original run\n", opts.bits)
     println("on streams ", opts.skip + 1, " and up, which the original run never drew from")
+    opts.suite == "interleaved" &&
+        println(opts.streams, " streams, ", opts.values, " value(s) each, as the original run")
     if opts.list
         println("\n--list given, nothing run.")
         return
