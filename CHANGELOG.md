@@ -40,6 +40,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whose `Float64` inversion is the work, keep one thread per element. The
   values do not change. `scripts/benchmarks/gpu_fills.jl` measures every fill.
 
+- **Faster `Float32` and `Float16` normal fills on the CPU.** `randn!` and
+  `randexp!` into a narrower array went through the standard library's
+  one-draw-at-a-time fallback, which cost a counter-based generator twice its
+  `Float64` rate. A counter-based generator now fills block by block, through
+  the function its GPU kernel uses, and the others draw eight uniforms onto the
+  stack at a time; `randn32!` takes the same paths. On one core of an Intel Core
+  Ultra 9 285, `randn!` into a `Float32` array went from 14.8 to 10.4 ns a value
+  with Philox4x32, 21.4 to 11.5 with Threefry4x64, 12.4 to 8.6 with MRG32k3a,
+  and 5.3 to 4.7 with Xoshiro256++; still without allocation, and with the same
+  values.
+
 - **Box-Muller moves to `randn_boxmuller!`** (Philox4x32, `Float64` and
   `Float32`, as before), and **`randn_inversion!` is deprecated**: it forwards to
   `randn!`, which is inversion now.

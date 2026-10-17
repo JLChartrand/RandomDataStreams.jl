@@ -1400,6 +1400,24 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             @test rand(r, Float32) == u32[2]
         end
 
+        # the narrow-float fills of the counter-based generators run block by
+        # block, from wherever the stream stands: the same values as the scalar
+        # draws, and the stream left where they would leave it
+        for G in (PhiloxRNG, Philox4x64RNG, Threefry4x32RNG, Threefry4x64RNG), pre in 0:5,
+            n in (1, 7, 8, 9, 64, 1001)
+            start = G(20261016)
+            for _ in 1:pre
+                rand(start, UInt32)
+            end
+            for (fill!, f, U, T) in ((randn!, norminv, Float64, Float32), (randn!, norminv, Float64, Float16),
+                                     (randexp!, R._expinv, Float64, Float32), (randn32!, norminv, Float32, Float32))
+                a, b = copy(start), copy(start)
+                @test fill!(a, Vector{T}(undef, n)) == [convert(T, f(rand(b, U))) for _ in 1:n]
+                @test get_state(a)[1] == get_state(b)[1] && get_state(a)[4] == get_state(b)[4]
+                @test rand(a, UInt32) == rand(b, UInt32)
+            end
+        end
+
         # moments, on the word grid and on the MRG's
         for mk in (makers[1], makers[8], makers[14])
             z = randn(mk(), 400_000)

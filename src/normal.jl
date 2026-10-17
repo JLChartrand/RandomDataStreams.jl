@@ -303,6 +303,56 @@ function Random.randexp!(rng::AbstractStreamableRNG, A::Array{Float64})
     return A
 end
 
+# Narrower arrays. A Float32 or Float16 normal is the Float64 one rounded, so
+# it needs Float64 uniforms the destination cannot hold, and the standard
+# library's fallback drew them one call at a time: from a counter-based
+# generator that cost twice its Float64 rate (14.8 ns a value from Philox4x32,
+# against 7.2), from an MRG half again. A counter-based generator now fills the
+# array block by block, as its GPU kernel does -- `_fill_block!`, each block
+# computed once -- and the others draw eight uniforms onto the stack before
+# mapping them, which lets the eight inversions overlap. No allocation either
+# way, and the values are the scalar draws', in order. `randn32!`, whose
+# uniforms are Float32, takes the same two paths.
+
+function _map_fill!(f::F, ::Type{U}, rng::AbstractStreamableRNG, A::Array{T}) where {F,U,T}
+    n = length(A)
+    i = 0
+    @inbounds while i + 8 <= n
+        u = ntuple(_ -> rand(rng, U), Val(8))      # in order: a tuple evaluates left to right
+        for j in 1:8
+            A[i + j] = convert(T, f(u[j]))
+        end
+        i += 8
+    end
+    @inbounds for k in i+1:n
+        A[k] = convert(T, f(rand(rng, U)))
+    end
+    return A
+end
+
+function _map_fill!(f::F, ::Type{U}, rng::CBRNG{B,W,N}, A::Array{T}) where {F,U,B,W,N,T}
+    n = length(A)
+    n == 0 && return A
+    hi, lo, w0 = _draw_position(rng)
+    nblocks = _blocks_spanned(U, W, N, w0, n)
+    if U === Float64 && W === UInt32 && isodd(w0)   # the last pair of a block straddles
+        for b in 0:nblocks-1
+            _fill_block!(A, f, U, typeof(rng), rng.key, hi, lo, w0, n, b, Val(true))
+        end
+    else
+        for b in 0:nblocks-1
+            _fill_block!(A, f, U, typeof(rng), rng.key, hi, lo, w0, n, b, Val(false))
+        end
+    end
+    _skip_draws!(rng, U, n)
+    return A
+end
+
+Random.randn!(rng::AbstractStreamableRNG, A::Array{T}) where {T<:Union{Float16,Float32}} =
+    _map_fill!(norminv, Float64, rng, A)
+Random.randexp!(rng::AbstractStreamableRNG, A::Array{T}) where {T<:Union{Float16,Float32}} =
+    _map_fill!(_expinv, Float64, rng, A)
+
 # Single-precision normals ------------------------------------------------------
 #
 # `randn(rng, Float32)` rounds the Float64 normal, as the standard library does:
@@ -344,3 +394,4 @@ function randn32!(rng::AbstractStreamableRNG, A::AbstractArray{Float32})
     end
     return A
 end
+randn32!(rng::AbstractStreamableRNG, A::Array{Float32}) = _map_fill!(norminv, Float32, rng, A)
