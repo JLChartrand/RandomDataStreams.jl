@@ -127,6 +127,33 @@ gives an identically zero output — so a new family whose bijection is weak for
 structured keys must override `stream_key` with a schedule that hashes the
 seed. See [Implementation Notes](implementation.md).
 
+## Can I reproduce cuRAND's Philox streams?
+
+Yes, word for word. cuRAND's `Philox4_32_10` is this package's `PhiloxRNG`: the
+seed is the key, its low 32 bits first, and cuRAND's subsequence is the
+package's substream — the high half of the counter — with the offset counting
+words into it:
+
+```julia
+rng = PhiloxRNG((s % UInt32, (s >> 32) % UInt32))   # cuRAND's seed s
+for _ in 1:k
+    next_substream!(rng)                             # curand_init(s, k, 0)
+end
+rand(rng, UInt32)                                    # the first curand(&state)
+```
+
+The same holds for the host API, whose default ordering for Philox takes four
+words from each of 65,536 subsequences in turn. The test suite checks words that
+cuRAND generated itself, through both APIs, at subsequences up to `2^64 − 1`.
+
+What carries over is the 32-bit words, not what is built on them. cuRAND's
+`curand_uniform` returns `x·2^-32 + 2^-33` in single precision, which is
+`1.0f0` for the largest word: its floats lie in `(0, 1]`, this package's in
+`(0, 1)`. Its normals are Box-Muller, this package's inversion. A pipeline that
+uses cuRAND's distributions therefore does not reproduce; one built on its words
+does, and a kernel of your own reaches any of them through
+[`philox4x32_10`](@ref) and [`philox4x32_counter`](@ref).
+
 ## Can I reproduce a NumPy pipeline?
 
 Partly. `PCG64` here produces exactly the same raw 64-bit outputs as

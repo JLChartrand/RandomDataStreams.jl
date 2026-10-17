@@ -1420,6 +1420,45 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "PhiloxRNG reproduces cuRAND's Philox4_32_10" begin
+        # Words cuRAND generated itself -- cuRAND 10.4 from CUDA 13.4, on an RTX
+        # A1000 -- not words computed here. cuRAND's seed is the key, low word
+        # first; its subsequence -- `curand_init(seed, subsequence, offset)` in
+        # the device API, sequence (n ÷ 4) mod 65536 of output n in the host
+        # API's default ordering, which for Philox is the legacy one and fixed
+        # across releases -- is the package's substream, the high half of the
+        # counter, and the offset counts words into it.
+        key = (UInt32(1234), UInt32(0))                       # seed 1234
+        host = ((0, 0, UInt32[0x2090b348, 0xda7cf0ab, 0x4401906f, 0xcbca470e]),
+                (1, 0, UInt32[0xd115a128, 0x52fc7c75, 0xc7f33f17, 0x0f1539db]),
+                (65535, 0, UInt32[0xc50798ff, 0x2de1f89b, 0x35542ec6, 0x8e29d01a]),
+                (0, 1, UInt32[0x9eeede35, 0x1cbe137c, 0xfa277093, 0x147edd50]))
+        for (sub, blk, words) in host                          # (subsequence, block, words)
+            rng = PhiloxRNG(key)
+            for _ in 1:sub
+                next_substream!(rng)
+            end
+            for _ in 1:4blk
+                rand(rng, UInt32)
+            end
+            @test [rand(rng, UInt32) for _ in 1:4] == words
+        end
+        # the device API, at a subsequence and an offset no stream object
+        # reaches by stepping: through the stateless primitives
+        device = ((0x0123456789abcdef, UInt64(1) << 40, 5,
+                   UInt32[0xaf399468, 0xfd62775b, 0x88ab1f0a, 0x56108d4d,
+                          0x515bc65c, 0xab81e79f, 0x6b521bbb, 0xdf85af67]),
+                  (typemax(UInt64), typemax(UInt64), 0,
+                   UInt32[0x3d3be307, 0x716983d6, 0x70094bed, 0x36c3cf91,
+                          0x933684c8, 0x53e5a0af, 0xd2fd021a, 0xb4c93c70]))
+        for (seed, sub, offset, words) in device
+            k = (seed % UInt32, (seed >> 32) % UInt32)
+            @test [philox4x32_10(philox4x32_counter(sub, UInt64(g ÷ 4)), k)[g % 4 + 1]
+                   for g in offset:offset + 7] == words
+        end
+    end
+
+
     @testset "stateless addressing matches the stream object" begin
         # A counter-based draw must be recomputable from (key, substream,
         # index) alone, with no stream object: that identity is what lets a
