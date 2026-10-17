@@ -1,83 +1,86 @@
-# Why branch philox-gpu-randn-test exists: a portable (no GPU, no CUDA.jl)
-# check of the actual mathematical claim behind preferring inversion over
-# Box-Muller (and accept-reject in general) for normal variates that feed
-# antithetic variates or RQMC.
+# Why `randn` draws by inversion: the mathematical claim behind the choice,
+# checked on the CPU against the alternatives.
 #
-# Those variance-reduction techniques manipulate the *uniform* stream
-# componentwise -- reflecting one coordinate (u -> 1 - u), or replacing it
-# with a low-discrepancy point -- and rely on the uniform -> normal transform
+# Antithetic variates and randomized quasi-Monte Carlo manipulate the *uniform*
+# stream componentwise -- reflecting one coordinate (u -> 1 - u), or replacing
+# it with a low-discrepancy point -- and rely on the uniform -> normal transform
 # to carry that structure through unchanged in every other coordinate. That
-# only holds for a transform that is (a) monotonic and (b) applied one
-# uniform to one normal, with no cross-talk between coordinates. Inversion,
-# Z = Phi^-1(U), is exactly that. Box-Muller is neither: it mixes a *pair* of
-# uniforms nonlinearly (one sets a radius, the other an angle), so reflecting
-# just one of them does not simply negate one output -- it changes an output
-# that is not even "at" that uniform, in an unrelated way. The GPU kernels
-# that put this into practice (ext/RandomDataStreamsCUDAExt.jl's
-# `randn_inversion!`, `randn!`, `randn_polar!`) need CUDA and a real device
-# to exercise (see test_cuda.jl); the underlying claim does not, since it is
-# a fact about the two transforms themselves, independent of how their
-# uniform inputs were generated.
+# only holds for a transform that is (a) monotone and (b) applied one uniform to
+# one normal, with no cross-talk between coordinates. Inversion,
+# Z = Phi^-1(U), is exactly that, and is what `randn` computes, as `norminv`.
 #
-# `ltqnorm` below is Peter Acklam's rational approximation to Phi^-1
-# (2003; https://web.archive.org/web/20151030215612/http://home.online.no/~pjacklam/notes/invnorm/),
-# used here only as a portable, CPU-only, self-contained stand-in for the
-# CUDA `normcdfinv` intrinsic `randn_inversion!` calls on the GPU -- not
-# exported, not part of the package's public API. Its two branches are
-# mirror images of each other by construction (the upper-tail branch is
-# exactly the negated lower-tail formula), so it satisfies the antithetic
-# identity in the test below by construction, not by coincidence -- which
-# is itself part of the point: *any* correct implementation of Phi^-1 must
-# satisfy it, since it is a property of the mathematical function, not of
-# one particular polynomial fit.
+# The two alternatives this file checks against are neither. Box-Muller, which
+# `randn_boxmuller!` runs on the GPU, mixes a *pair* of uniforms nonlinearly
+# (one sets a radius, the other an angle), so reflecting one of them does not
+# negate one output. The standard library's Ziggurat, which `randn` used before,
+# takes the sign, the layer and the abscissa from different bits of one word:
+# complementing the word -- which is what reflecting the uniform does to it,
+# see floats.jl -- does not negate the normal either. docs/src/streams.md
+# tabulates the comparison.
 
-function ltqnorm(p::Float64)
-    a1 = -3.969683028665376e+01; a2 = 2.209460984245205e+02; a3 = -2.759285104469687e+02
-    a4 = 1.383577518672690e+02;  a5 = -3.066479806614716e+01; a6 = 2.506628277459239e+00
-    b1 = -5.447609879822406e+01; b2 = 1.615858368580409e+02;  b3 = -1.556989798598866e+02
-    b4 = 6.680131188771972e+01;  b5 = -1.328068155288572e+01
-    c1 = -7.784894002430293e-03; c2 = -3.223964580411365e-01; c3 = -2.400758277161838e+00
-    c4 = -2.549732539343734e+00; c5 = 4.374664141464968e+00;  c6 = 2.938163982698783e+00
-    d1 = 7.784695709041462e-03;  d2 = 3.224671290700398e-01;  d3 = 2.445134137142996e+00
-    d4 = 3.754408661907416e+00
+using RandomDataStreams
+using Random
+using Test
 
-    p_low, p_high = 0.02425, 1 - 0.02425
-    if p < p_low
-        q = sqrt(-2 * log(p))
-        return (((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) / ((((d1*q+d2)*q+d3)*q+d4)*q+1)
-    elseif p <= p_high
-        q = p - 0.5; r = q * q
-        return (((((a1*r+a2)*r+a3)*r+a4)*r+a5)*r+a6)*q / (((((b1*r+b2)*r+b3)*r+b4)*r+b5)*r+1)
-    else
-        q = sqrt(-2 * log(1 - p))
-        return -(((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) / ((((d1*q+d2)*q+d3)*q+d4)*q+1)
-    end
+# A generator that hands the standard library either the words of a Xoshiro or
+# their complements -- the words of the reflected uniforms, since
+# 1 - _u01(w) == _u01(~w). For the Ziggurat counterexample below.
+struct Words <: AbstractRNG
+    r::Xoshiro
+    complement::Bool
 end
+Random.rng_native_52(::Words) = UInt64
+Random.rand(w::Words, ::Random.SamplerType{UInt64}) =
+    w.complement ? ~rand(w.r, UInt64) : rand(w.r, UInt64)
 
 @testset "why inversion, for antithetic/RQMC normal variates" begin
 
-    @testset "ltqnorm sanity: known quantiles" begin
-        # Standard reference values (R's qnorm / any statistical table),
-        # checked to Acklam's own advertised bound (relative error < 1.5e-9).
-        for (p, expected) in ((0.5, 0.0), (0.975, 1.9599639845400545),
-                              (0.995, 2.5758293035489004), (0.025, -1.9599639845400545),
-                              (0.99, 2.3263478740408408))
-            @test isapprox(ltqnorm(p), expected; atol = 3e-9)
+    @testset "norminv: known quantiles" begin
+        # Phi^-1 of each Float64 u, rounded from 256-bit MPFR arithmetic
+        # (bisection then Newton on Phi = erfc/2), at a point of each of AS 241's
+        # three regions, their boundaries and the extremes of the uniform grid.
+        for (u, z) in ((0.5, 0.0),
+                       (0.975, 1.9599639845400538),
+                       (0.025, -1.9599639845400543),
+                       (0.075, -1.439531470938456),
+                       (1.0e-10, -6.361340902404057),
+                       (exp(-25.0), -6.657904643501103),
+                       (2.0^-53, -8.209536151601387),
+                       (1 - 2.0^-53, 8.209536151601387))
+            @test isapprox(norminv(u), z; rtol = 2e-15, atol = 1e-300)
+        end
+        @test norminv(0.0) == -Inf && norminv(1.0) == Inf
+        @test isnan(norminv(-0.5)) && isnan(norminv(1.5)) && isnan(norminv(NaN))
+        # the single-precision map, to its own accuracy
+        @test isapprox(norminv(0.975f0), Float32(norminv(Float64(0.975f0))); rtol = 4e-7)
+    end
+
+    @testset "norminv(1 - u) == -norminv(u), exactly, on the uniform grid" begin
+        # The word generators' uniforms are odd multiples of 2^-53, a grid
+        # symmetric about 1/2 on which 1 - u is exact and u - 1/2 too, and
+        # norminv works from |u - 1/2| and its sign -- so the identity is exact,
+        # all the way to the extremes, not merely to the fit's accuracy.
+        rng = Xoshiro256p(UInt64[1, 2, 3, 4])
+        for _ in 1:200_000
+            u = rand(rng)
+            @test norminv(1 - u) == -norminv(u)
+        end
+        for k in 0:999
+            u = (2k + 1) * 2.0^-53
+            @test norminv(1 - u) == -norminv(u)
+        end
+        # and in single precision, on the Float32 grid of `randn32`
+        for k in 0:(2^23 - 1)
+            u = Float32((2k + 1) * 2.0^-24)
+            norminv(1f0 - u) == -norminv(u) || @test false
         end
     end
 
-    @testset "inversion: Phi^-1(1 - u) == -Phi^-1(u), to near machine precision" begin
-        # Margin kept at 1e-6 (not all the way to 0/1): Acklam's rational fit
-        # has a *relative* error bound in p-space, which the inverse function
-        # amplifies out in x-space as p approaches the endpoints (the density
-        # in the denominator shrinks faster than the fit's error does) --
-        # a property of this one polynomial approximation used for testing,
-        # not of Phi^-1 itself, whose exact identity holds all the way to the
-        # endpoints (where it reads -Inf == -(Inf)).
-        rng = Xoshiro256p(UInt64[1, 2, 3, 4])
-        for _ in 1:200_000
-            u = rand(rng) * (1 - 2e-6) + 1e-6
-            @test isapprox(ltqnorm(1 - u), -ltqnorm(u); atol = 1e-8)
+    @testset "an antithetic stream of uniforms gives the negated normals" begin
+        for mk in (() -> next_stream!(PhiloxGen(7)), () -> next_stream!(PCG64Gen(7)),
+                   () -> next_stream!(Xoshiro256ppGen(7)))
+            u = rand(mk(), 1000)
+            @test norminv.(1 .- u) == -randn(mk(), 1000)
         end
     end
 
@@ -85,28 +88,34 @@ end
         # The property antithetic/RQMC schemes actually need: reflecting a
         # single uniform in a vector must not perturb the normals built from
         # the other coordinates. True by construction for a componentwise
-        # transform (each Z_i is a function of U_i alone); asserted here as a
-        # regression net on `ltqnorm` itself, and as documentation of exactly
-        # what "componentwise" is buying.
+        # transform (each Z_i is a function of U_i alone).
         rng = Xoshiro256p(UInt64[5, 6, 7, 8])
         u = rand(rng, 8)
-        z = ltqnorm.(u)
+        z = norminv.(u)
         for i in eachindex(u)
             u2 = copy(u); u2[i] = 1 - u2[i]
-            z2 = ltqnorm.(u2)
+            z2 = norminv.(u2)
             for j in eachindex(u)
-                if j == i
-                    @test isapprox(z2[j], -z[j]; atol = 1e-9)
-                else
-                    @test z2[j] == z[j]
-                end
+                @test z2[j] == (j == i ? -z[j] : z[j])
             end
         end
     end
 
+    @testset "Ziggurat: complementing the word does NOT negate the normal" begin
+        # The standard library's randn, on the words of a Xoshiro and on their
+        # complements (`Words`, above).
+        negated = 0
+        for seed in 1:1000
+            z  = Random.randn(Words(Xoshiro(seed), false))
+            zc = Random.randn(Words(Xoshiro(seed), true))
+            zc == -z && (negated += 1)
+        end
+        @test negated == 0
+    end
+
     @testset "Box-Muller: reflecting one coordinate does NOT negate one output" begin
         # z1 = r*cos(theta) with r = sqrt(-2*log(1-u1)), theta = 2*pi*u2 --
-        # the transform this package's GPU `randn!` (Box-Muller) uses.
+        # the transform `randn_boxmuller!` uses on the GPU.
         bm_z1(u1, u2) = sqrt(-2 * log(1 - u1)) * cos(2 * pi * u2)
 
         rng = Xoshiro256p(UInt64[9, 10, 11, 12])
@@ -126,9 +135,8 @@ end
     @testset "Box-Muller: reflecting BOTH coordinates does not negate the pair either" begin
         # Even the more generous reflection -- negate the whole underlying
         # pair, not just one coordinate -- fails, because reflecting u1
-        # changes r nonlinearly while reflecting u2 only rotates theta by pi,
-        # and cos/sin of (theta + pi) is a sign flip that does not compose
-        # with the mismatched r' the way it would need to.
+        # changes r nonlinearly while reflecting u2 only mirrors theta, and
+        # cos(2pi - theta) = cos(theta) keeps the first output's sign.
         bm(u1, u2) = (r = sqrt(-2 * log(1 - u1)); theta = 2 * pi * u2; (r * cos(theta), r * sin(theta)))
 
         rng = Xoshiro256p(UInt64[13, 14, 15, 16])

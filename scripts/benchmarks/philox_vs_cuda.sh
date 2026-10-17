@@ -33,7 +33,8 @@
 #   BENCH_CHUNK_LOG2   draws per buffer fill, log2     (default 26; keep it a
 #                      power of two, see philox_vs_cuda.jl)
 #   BENCH_REPS         timed repetitions per case      (default 5)
-#   BENCH_CONTENDERS   space-separated subset to run   (default: all five)
+#   BENCH_CONTENDERS   space-separated subset to run   (default: all six;
+#                      philox_randn32 runs in Float32 only)
 #   BENCH_TIMEOUT      seconds before a case is killed (default 1800)
 #   BENCH_NO_PUSH      set to 1 to keep the results local: nothing is copied
 #                      into the tracked folder, committed or pushed (use for
@@ -60,7 +61,7 @@ readonly OUT_DIR="$SCRIPT_DIR/results/$RUN_NAME"
 readonly CSV="$OUT_DIR/philox_vs_cuda.csv"
 readonly ERRORS="$OUT_DIR/errors.txt"
 readonly TIMEOUT="${BENCH_TIMEOUT:-1800}"
-readonly CONTENDERS="${BENCH_CONTENDERS:-philox_boxmuller philox_inversion curand gpuarrays native}"
+readonly CONTENDERS="${BENCH_CONTENDERS:-philox_inversion philox_randn32 philox_boxmuller curand gpuarrays native}"
 readonly ELTYPES="Float32 Float64"
 
 mkdir -p "$OUT_DIR/logs"
@@ -104,6 +105,7 @@ total_cases=0
 
 for T in $ELTYPES; do
     for C in $CONTENDERS; do
+        [ "$C" = philox_randn32 ] && [ "$T" != Float32 ] && continue
         total_cases=$((total_cases + 1))
         log="$OUT_DIR/logs/${C}_${T}.log"
         echo "---- $C / $T ----"

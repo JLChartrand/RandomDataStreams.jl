@@ -292,6 +292,69 @@ moves the state forward by `n` steps, where `n = 2^e + c` (`e` may be negative,
 and negative `c` moves backwards). This costs O(log n) matrix operations,
 independent of the distance jumped.
 
+## Normal variates and variance reduction
+
+Every generator draws its normals by inversion: `randn(rng)` is
+[`norminv`](@ref)`(rand(rng, Float64))`, one uniform per normal, through the
+standard normal quantile function Φ⁻¹. Exponential variates follow the same rule,
+`randexp(rng)` being `-log(1 - rand(rng, Float64))`. The standard library uses
+the Ziggurat for both instead, which is faster, but which breaks what common
+random numbers, antithetic variates and randomized quasi-Monte Carlo need from
+the map between uniforms and normals:
+
+| | Ziggurat (the standard library's `randn`) | Box-Muller ([`randn_boxmuller!`](@ref), GPU) | Inversion (`randn`, `randn!`) |
+|---|---|---|---|
+| Uniforms per normal | variable: a rejection now and then | 2 → 2, coupled | 1 → 1 |
+| Antithetic variates (u → 1 − u) | no −z: the sign, the layer and the abscissa come from different bits of one word | no −z: the radius changes, and cos 2π(1 − u) = cos 2πu | z → −z, exactly on the word generators' grid |
+| Common random numbers | hold only while both systems make the same calls in the same order: how many words a normal takes depends on their values | hold, in pairs: a normal's partner is drawn with it | natural: the k-th normal depends on the k-th uniform alone |
+| Randomized quasi-Monte Carlo | incompatible: rejection makes the dimension random | valid, but each normal depends on two coordinates, which weakens the reduction | the reference method: one coordinate per normal |
+| k-th normal computable directly | no | in pairs | yes — which is what makes the GPU fill the CPU's |
+
+The antithetic identity is exact, not approximate. The word generators'
+uniforms are odd multiples of ``2^{-53}``, a grid symmetric about ``1/2`` on
+which `1 - u` and `u - 1/2` are both exact, and `norminv` works from
+``|u - 1/2|`` and its sign, so `norminv(1 - u) == -norminv(u)` for every
+uniform they return, the extremes included. An antithetic stream of uniforms
+therefore gives exactly the negated normals. `test/test_randn_variance_reduction.jl`
+checks each cell of the antithetic row, for the three methods.
+
+**How far the tails reach** is set by the resolution of the uniform, since the
+extreme normal is Φ⁻¹ of the extreme uniform. On the 53-bit grid of the word
+generators that is ±8.21. MRG32k3a's uniforms are multiples of ``1/(m_1 + 1)``,
+about ``2.3 \times 10^{-10}``, so its normals stay within ±6.23; MRG63k3a reaches
+−9.00 below and 8.21 above, where `Float64` runs out of resolution near 1. A
+`Float32` or `Float16` normal from `randn` is the `Float64` one rounded, as in
+the standard library, so it keeps these tails. [`randn32`](@ref) is the other
+trade: the single-precision Φ⁻¹ of a `Float32` uniform, in `Float32` arithmetic
+throughout, whose tails stop at ±5.29 — the quantile of the `Float32` grid's
+extreme ``2^{-24}``, with the probability beyond it, about ``10^{-7}``, landing
+on that last point. It keeps every property in the table, the exact antithetic
+identity included, on the `Float32` grid.
+
+**What it costs** is speed: Φ⁻¹ is a rational function of degree 7, and a
+logarithm in the tails, where the Ziggurat is mostly a table lookup and a
+multiplication. On one core of an Intel Core Ultra 9 285, measured while the
+other cores were busy, a normal from Xoshiro256++ took about 4.5 ns more than
+the uniform under it, against 1.2 ns for the Ziggurat; for the counter-based
+generators and the MRGs, whose uniforms cost more, the two came out within 15%
+of each other. On a GPU the map runs in `Float64`, which a consumer card
+computes at a small fraction of its `Float32` rate. An RTX A1000 fills about
+0.6 billion normals a second by inversion, `Float64` or `Float32`, against about
+1.4 billion `Float64` and 25 to 30 billion `Float32` normals for
+[`randn_boxmuller!`](@ref) — and 1.6 billion `Float64` for cuRAND's own
+Box-Muller, which meets the same `Float64` limit. `randn32!` brings inversion
+to about 11 billion `Float32` normals a second there (Philox4x32), with the
+CPU's values on the device as for `randn!`. On that card, power-limited at
+50 W, these rates vary by 10 to 20% from one run to the next. For uses that need none of the properties above,
+Julia's own `Xoshiro` keeps the Ziggurat, and `randn_boxmuller!` stays on the
+GPU.
+
+To map uniforms of your own the same way — the points of a randomized
+quasi-Monte Carlo rule, for instance — call [`norminv`](@ref) on them. It is the
+same function, and gives the same bits on a GPU; the
+[Implementation Notes](implementation.md#Normal-and-exponential-variates)
+explain how.
+
 ## Scope: host-side streams, device-side draws
 
 The stream object of L'Ecuyer et al. (2002) is stateful by construction — a
@@ -326,10 +389,14 @@ which IEEE 754 fixes to the last bit on any device. The test suite
 checks the position-addressed draws against the stream object on the CPU, and
 the device fill against the CPU fill whenever a CUDA device is present.
 
-Normal variates are the exception. `randn!` on a `CuArray` (Philox4x32 only)
-uses Box-Muller, which suits a kernel where the CPU's Ziggurat does not, and
-its logarithms and sines come from CUDA's libdevice rather than Julia's libm:
-it continues the same stream, but its values are not the CPU's `randn`.
+Normal and exponential variates follow. `randn!` and `randexp!` on a `CuArray`
+fill it with the CPU's values, bit for bit, for the same four generators and
+from any position: element `k` is [`norminv`](@ref) (or `-log(1 - u)`) of the
+`k`-th `Float64` uniform, and the package computes both maps with correctly
+rounded operations only, never CUDA's libdevice — see
+[Normal variates and variance reduction](#Normal-variates-and-variance-reduction).
+[`randn_boxmuller!`](@ref) (Philox4x32 only) is the faster alternative; it
+continues the same stream, but its values are not the CPU's.
 
 **Writing your own kernel: the addressing scheme is the work assignment.** The
 key names the stream, the high half of the counter the substream, the low half

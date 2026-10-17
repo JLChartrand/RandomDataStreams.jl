@@ -6,7 +6,47 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`randn` and `randexp` draw by inversion, on every generator.** `randn(rng)`
+  is now `norminv(rand(rng, Float64))` and `randexp(rng)` is
+  `-log(1 - rand(rng, Float64))`, in place of the standard library's Ziggurat:
+  one uniform per variate, through a monotone map. Antithetic variates, common
+  random numbers and randomized quasi-Monte Carlo now carry through from the
+  uniforms to the variates -- on the word generators' grid, reflecting a uniform
+  negates its normal exactly. **Every normal and exponential sequence changes**;
+  the uniforms do not. A normal costs more: about 4.5 ns over its uniform on
+  Xoshiro256++, against 1.2 ns for the Ziggurat. The manual's "Normal variates
+  and variance reduction" tabulates the comparison.
+
+- **On the GPU, `randn!` and `randexp!` are the CPU's, bit for bit**, for the
+  four counter-based generators and `Float64`, `Float32` and `Float16`, from
+  any position, mid-block included. They were Box-Muller, Philox4x32 only and
+  block-aligned, matching nothing on the CPU. Both maps are computed with
+  correctly rounded operations only -- an fdlibm logarithm instead of libm's or
+  libdevice's, and every product feeding a sum written as an fma, since the GPU
+  compiler fuses what the CPU's does not. A `Float32` normal is computed in
+  `Float64`, as on the CPU, which a consumer GPU runs slowly: about 0.6 billion
+  a second on an RTX A1000.
+
+- **Box-Muller moves to `randn_boxmuller!`** (Philox4x32, `Float64` and
+  `Float32`, as before), and **`randn_inversion!` is deprecated**: it forwards to
+  `randn!`, which is inversion now.
+
 ### Added
+
+- **`randn32` and `randn32!`: single-precision normals by inversion**, the
+  `Float32` Φ⁻¹ (AS 241's PPND7) of `rand(rng, Float32)`, in `Float32`
+  arithmetic throughout, on every generator and, through the CUDA extension, on
+  a `CuArray{Float32}` with the CPU's values bit for bit. About eighteen times
+  `randn!`'s `Float32` rate on an RTX A1000 (about 11 billion a second with
+  Philox4x32), for tails that stop at ±5.29 instead of ±8.21. `norminv` on a
+  `Float32` is this single-precision map.
+
+- **`norminv(u)`**, the standard normal quantile function `randn` uses
+  (Wichura's AS 241, relative error below 5e-16), exported so that the points of
+  a randomized quasi-Monte Carlo rule, or a kernel's own uniforms, map the same
+  way, with the same bits on a GPU.
 
 - **Campaigns over several interleaved shapes.** `scripts/testu01/campaign.jl`
   takes `--shapes=<streams>x<values>[,...]` and runs the interleaved suite once

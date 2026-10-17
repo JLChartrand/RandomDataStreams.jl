@@ -449,6 +449,48 @@ MRG63k3a needs one more guard. For the twelve largest values of `k`,
 in L'Ecuyer's C code as well. Those draws are capped at `prevfloat(1.0)`, the
 only place where the package departs from the reference values.
 
+## Normal and exponential variates
+
+`randn(rng)` is Φ⁻¹ of one uniform and `randexp(rng)` is `-log(1 - u)` of one;
+[Streams & Substreams](streams.md#Normal-variates-and-variance-reduction)
+explains why. The two maps live in `src/normal.jl` and are built to give the
+same bits on every IEEE 754 device.
+
+Φ⁻¹ is Wichura's AS 241, PPND16 (*Applied Statistics* 37, 1988): rational
+functions of degree 7 in three regions. The central one, ``|u - 1/2| \le 0.425``,
+covers 85% of the draws and needs no logarithm; the two tails take
+``r = \sqrt{-\log \min(u, 1 - u)}``, split at ``r = 5``. Against 256-bit MPFR its
+relative error stayed below ``5 \times 10^{-16}``, 4 ulp at worst over 20 000
+points spread across the three regions. The logarithm is fdlibm's `e_log.c`,
+within 0.81 ulp in the same check.
+
+Both use only operations IEEE 754 rounds correctly — `+`, `−`, `×`, `÷`, `sqrt`,
+`fma` — and integer operations on the bits. No libm: Julia's `log` and CUDA's
+libdevice `log` differ in the last bits. And no product is ever an operand of a
+sum, because the GPU compiler contracts `a * b + c` into an fma where the CPU's
+does not: before every such sum was written as the fma itself, one exponential
+in 200 000 came out an ulp apart on the device. The test suite now compares the
+maps on the device and on the host over the extremes of the uniform grid, both
+tails, the boundaries between the regions and a million further points, and the
+device fills against the CPU fills for the four counter-based families.
+
+The antithetic identity `norminv(1 - u) == -norminv(u)` is exact on the word
+generators' grid of odd multiples of ``2^{-53}``: `1 - u` and `u - 1/2` are
+exact there, and the rational function is computed from ``|u - 1/2|`` and its
+sign. A `Float32` or `Float16` normal from `randn` is the `Float64` one
+rounded, as in the standard library.
+
+`randn32` and `norminv(::Float32)` are the same construction in single
+precision: AS 241's PPND7, polynomials of degree 3 over 2 in the same three
+regions, and FreeBSD's `e_logf.c`, the `Float32` conversion of fdlibm's
+logarithm, with the same fma rule. Both were checked against the `Float64`
+versions over every `Float32` they accept: the logarithm within 0.854 ulp over
+all positive finite `Float32`, Φ⁻¹ within 5.4 `Float32` ulps over all of
+``(0, 1)`` — the worst near ``1.5 \times 10^{-11}``, in a tail no uniform of the
+``2^{-24}`` grid reaches — and the antithetic identity exact, and the map
+monotone, over all ``2^{23}`` points of that grid. The device gives the same
+bits over all of them.
+
 ## Testing strategy
 
 Reference sequences were captured from the reference implementations

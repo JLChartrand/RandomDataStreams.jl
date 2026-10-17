@@ -49,6 +49,10 @@ closed-form LCG jump instead. The [FAQ](docs/src/faq.md) explains why.
   Julia's built-in RNGs — `rand`/`rand!` on scalars, arrays and ranges,
   `randn`, `randexp`, `shuffle`, `randperm`, `randsubseq`, `Random.seed!(rng,
   seed)` all work with every generator (details per generator in the docs).
+- **Normals by inversion**: `randn` and `randexp` take one uniform per
+  variate through Φ⁻¹ and `-log(1 - u)`, so antithetic variates, common random
+  numbers and randomized quasi-Monte Carlo carry through from the uniforms — and
+  on the GPU, `randn!` gives the CPU's values bit for bit.
 - **Zero-allocation hot paths**: all generators produce numbers without heap
   allocation.
 

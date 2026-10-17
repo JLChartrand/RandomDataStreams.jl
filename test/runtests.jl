@@ -1356,6 +1356,94 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "normal and exponential variates are inversions of the uniforms" begin
+        # randn(rng) is norminv(rand(rng, Float64)) and randexp(rng) is
+        # -log(1 - rand(rng, Float64)), for every family and through every
+        # entry point of the Random API: the scalar draw sets the sequence, a
+        # narrower float is that draw rounded, and an array is the scalar draws
+        # in order -- one uniform per variate, which is what antithetic
+        # variates, common random numbers and RQMC need.
+        R = RandomDataStreams
+        makers = [() -> next_stream!(MRG32k3aGen()), () -> next_stream!(MRG63k3aGen()),
+                  () -> next_stream!(R.Xoroshiro128pGen(12345)), () -> next_stream!(R.Xoroshiro128ssGen(12345)),
+                  () -> next_stream!(R.Xoroshiro128ppGen(12345)), () -> next_stream!(Xoshiro256plusGen(12345)),
+                  () -> next_stream!(R.Xoshiro256ssGen(12345)), () -> next_stream!(R.Xoshiro256ppGen(12345)),
+                  () -> next_stream!(R.Xoshiro512pGen(12345)), () -> next_stream!(R.Xoshiro512ssGen(12345)),
+                  () -> next_stream!(R.Xoshiro512ppGen(12345)), () -> next_stream!(PCG64Gen(12345)),
+                  () -> next_stream!(PCG64DXSMGen(12345)), () -> next_stream!(PhiloxGen(12345)),
+                  () -> next_stream!(Philox4x64Gen(12345)), () -> next_stream!(Threefry4x32Gen(12345)),
+                  () -> next_stream!(Threefry4x64Gen(12345))]
+        @test length(makers) == 17
+        for mk in makers
+            u = (r = mk(); [rand(r, Float64) for _ in 1:9])
+            for T in (Float64, Float32, Float16)
+                z = T.(norminv.(u))
+                e = T.(R._expinv.(u))
+                @test (r = mk(); [randn(r, T) for _ in 1:9]) == z
+                @test randn(mk(), T, 9) == z
+                @test randn!(mk(), Vector{T}(undef, 9)) == z
+                @test (r = mk(); [randexp(r, T) for _ in 1:9]) == e
+                @test randexp(mk(), T, 9) == e
+                @test randexp!(mk(), Vector{T}(undef, 9)) == e
+            end
+            @test randn(mk()) == norminv(u[1])
+            c = randn(mk(), ComplexF64)
+            @test real(c) ≈ norminv(u[1]) / sqrt(2) && imag(c) ≈ norminv(u[2]) / sqrt(2)
+            # a draw continues the stream: what follows a normal is the next uniform
+            r = mk(); randn(r); randexp(r)
+            @test rand(r, Float64) == u[3]
+            # randn32: the single-precision map of the Float32 uniforms
+            u32 = (r = mk(); [rand(r, Float32) for _ in 1:9])
+            @test (r = mk(); [randn32(r) for _ in 1:9]) == norminv.(u32)
+            @test randn32!(mk(), Vector{Float32}(undef, 9)) == norminv.(u32)
+            r = mk(); randn32(r)
+            @test rand(r, Float32) == u32[2]
+        end
+
+        # moments, on the word grid and on the MRG's
+        for mk in (makers[1], makers[8], makers[14])
+            z = randn(mk(), 400_000)
+            @test abs(sum(z) / length(z)) < 0.01
+            @test abs(sum(abs2, z) / length(z) - 1) < 0.01
+            e = randexp(mk(), 400_000)
+            @test all(>(0), e) && abs(sum(e) / length(e) - 1) < 0.01
+        end
+
+        # the logarithm under both maps is within an ulp of the standard one
+        rng = Xoshiro256pp(UInt64[1, 2, 3, 4])
+        for x in vcat(reinterpret.(Float64, rand(rng, 0x0000000000000001:0x7fefffffffffffff, 20_000)),
+                      rand(rng, 20_000), [1.0, prevfloat(1.0), nextfloat(1.0), floatmin(), nextfloat(0.0)])
+            @test abs(R._log(x) - log(x)) <= eps(log(x))
+        end
+        @test R._log(0.0) == -Inf && R._log(Inf) == Inf && isnan(R._log(-1.0))
+
+        # single precision: the Float32 logarithm within an ulp of the Float64
+        # one rounded, and the Float32 Φ⁻¹ within 6 Float32 ulps of the Float64
+        # one -- the worst over every Float32 in (0, 1) is 5.4, in a tail no
+        # uniform of the grid reaches
+        for x in vcat(reinterpret.(Float32, rand(rng, 0x00000001:0x7f7fffff, 20_000)),
+                      rand(rng, Float32, 20_000), [1f0, prevfloat(1f0), floatmin(Float32), nextfloat(0f0)])
+            @test abs(Float64(R._log(x)) - log(Float64(x))) <= eps(Float32(log(Float64(x))))
+        end
+        for u in vcat(rand(rng, Float32, 20_000), Float32.(exp.(-60 .* rand(rng, 2_000))))
+            0 < u < 1 || continue
+            ref = norminv(Float64(u))
+            @test abs(Float64(norminv(u)) - ref) <= 6 * eps(Float32(abs(ref)))
+        end
+        @test R._log(0f0) == -Inf32 && R._log(Inf32) == Inf32 && isnan(R._log(-1f0))
+        @test norminv(0f0) == -Inf32 && norminv(1f0) == Inf32 && isnan(norminv(2f0))
+        # the Float32 grid is symmetric too, and its extremes give +-5.29
+        for k in vcat(0:999, rand(rng, 0:(2^23 - 1), 20_000))
+            u = Float32((2k + 1) * 2.0^-24)
+            @test norminv(1f0 - u) == -norminv(u)
+        end
+        @test norminv(Float32(2.0^-24)) ≈ -5.2947f0
+        @test randn32(next_stream!(PhiloxGen(3))) isa Float32
+        z32 = randn32!(next_stream!(PhiloxGen(3)), Vector{Float32}(undef, 400_000))
+        @test abs(sum(z32) / length(z32)) < 0.01 && abs(sum(abs2, z32) / length(z32) - 1) < 0.01
+    end
+
+
     @testset "position-addressed float draws match the stream object" begin
         # `_draw_at` is what a GPU kernel computes for element k of a fill; it
         # must reproduce the stream object from any position, for every
