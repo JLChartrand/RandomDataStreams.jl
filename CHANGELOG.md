@@ -57,6 +57,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Validation
 
+- **`PhiloxRNG` reproduces cuRAND's `Philox4_32_10`**, word for word: cuRAND's
+  seed is the key, low word first, and its subsequence is the package's
+  substream. Checked against cuRAND 10.4 (CUDA 13.4) through the host API, on
+  4 194 304 words for four seeds, and through the device API's
+  `curand_init(seed, subsequence, offset)`, on 1 310 720 words with
+  subsequences up to `2^64 - 1` and offsets mid-block; the test suite keeps
+  words cuRAND generated. The FAQ says what carries over and what does not:
+  the words, not cuRAND's floats, which include 1.0, nor its Box-Muller
+  normals.
+
+- **`MRG32k3a` reproduces cuRAND's `MRG32k3a`**, on the combination `z` both
+  then scale: seed 0 is the published state `MRG32k3a()` starts from, other
+  seeds go through `curand_init`'s map, and cuRAND's subsequence `k` is the
+  package's substream `k`, `k·2^76` steps in. Checked against cuRAND 10.4 on
+  4 × 2 621 440 values of the host API and 524 288 of the device API, with
+  subsequences up to `2^51 − 1`, the end of the range cuRAND declares valid,
+  and offsets up to 10⁶; the test suite keeps values cuRAND generated.
+
 - **BigCrush over the whole matrix**, at v0.3.0: the seventeen generators,
   BigCrush on the `single` and `interleaved` suites, Alphabit and Rabbit on
   `bits`, 68 runs and 6409 statistics. No failure; eleven suspects against ≈12.8
