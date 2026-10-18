@@ -85,6 +85,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   another matrix in the same directory. Its `--skip-calibration` starts a sweep
   with `--jobs` given without first running one job alone.
 
+- **A calibration harness for BigCrush's CollisionOver tests.**
+  `scripts/testu01/calibrate.jl` replicates tests 3 to 12 of BigCrush --
+  `smarsa_CollisionOver` in its ten parameter sets -- on TestU01's own AES,
+  which no Julia code touches, or on a package generator, and records the
+  number of collisions and the p-value of every replication. The TestU01 layer
+  gains TestU01's native generators (`TU01.aes`, `TU01.ulec_mrg32k3a`), and the
+  test suite checks that TestU01's MRG32k3a and the package's give identical
+  SmallCrush statistics, double for double: what the batteries see through the
+  Julia callback is what they would see from inside the library.
+
 - **A `substreams` suite.** `scripts/testu01/validate.jl --suite=substreams`
   interleaves the substreams of one stream, in the same shapes as
   `interleaved`, rather than separate streams: the other of the two

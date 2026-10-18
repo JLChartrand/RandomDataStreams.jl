@@ -153,11 +153,86 @@ function free!(g::Gen)
 end
 
 """
+    NativeGen
+
+A generator TestU01 implements itself, made by one of its own constructors and
+called by the batteries with no Julia in between: no callback, and no conversion
+of ours between the generator and the test. Every generator of this package goes
+through the same callback, so only such a generator can tell a property of a
+test from a property of that path. Build one with [`aes`](@ref) or
+[`ulec_mrg32k3a`](@ref); [`withgen`](@ref) and [`repeat_battery`](@ref) take it
+like a [`Gen`](@ref).
+
+TestU01's one-generator-at-a-time restriction is on its external generators,
+whose state is a global; native ones keep their own, so `LIVE` is not claimed.
+"""
+mutable struct NativeGen
+    ptr::Ptr{Cvoid}
+    delete::Symbol      # the library's matching destructor
+    keep::Any           # what the constructor was handed, kept alive with it
+    name::String
+end
+
+"""
+    aes(key; seed = zeros(UInt8, 16), mode = :ctr, r = 0, s = 16) -> NativeGen
+
+TestU01's AES generator, `ucrypto_CreateAES`: the Rijndael cipher of Rijmen,
+Bosselaers and Barreto, with a key of 16, 24 or 32 bytes. In counter mode
+(`:ctr`, the default) block `j` is the encryption of `seed + j`; `:ofb` feeds
+each block back, `:ktr` counts in the key. Of each 16-byte block the first `r`
+bytes are dropped and the next `s` make 32-bit outputs, as the guide describes.
+"""
+function aes(key::AbstractVector{UInt8}; seed::AbstractVector{UInt8} = zeros(UInt8, 16),
+             mode::Symbol = :ctr, r::Integer = 0, s::Integer = 16)
+    length(key) in (16, 24, 32) || error("an AES key is 16, 24 or 32 bytes, not $(length(key))")
+    length(seed) == 16 || error("the AES seed is one 16-byte block, not $(length(seed)) bytes")
+    (0 <= r <= 15 && 1 <= s <= 16 && r + s <= 16) || error("need 0 <= r <= 15, 1 <= s <= 16, r + s <= 16")
+    m = mode === :ofb ? 0 : mode === :ctr ? 1 : mode === :ktr ? 2 :
+        error("mode is :ofb, :ctr or :ktr, not :$mode")
+    k, sd = Vector{UInt8}(key), Vector{UInt8}(seed)
+    ptr = GC.@preserve k sd ccall((:ucrypto_CreateAES, libtestu01), Ptr{Cvoid},
+                                  (Ptr{UInt8}, Cint, Ptr{UInt8}, Cint, Cint, Cint),
+                                  k, 8 * length(k), sd, m, r, s)
+    ptr == C_NULL && error("ucrypto_CreateAES returned NULL")
+    return NativeGen(ptr, :ucrypto_DeleteAES, (k, sd), "AES-$(8 * length(k)) $(uppercase(String(mode)))")
+end
+
+"""
+    ulec_mrg32k3a(state = (12345, 12345, 12345, 12345, 12345, 12345)) -> NativeGen
+
+TestU01's own MRG32k3a, `ulec_CreateMRG32k3a`, from the six-component state.
+Its outputs are `z/(m1 + 1)`, the package's `MRG32k3a` construction, so from
+the same state the two hand a battery the same numbers -- one through the
+callback, one without it.
+"""
+function ulec_mrg32k3a(state::NTuple{6,<:Integer} = (12345, 12345, 12345, 12345, 12345, 12345))
+    x = Float64.(state)
+    ptr = ccall((:ulec_CreateMRG32k3a, libtestu01), Ptr{Cvoid},
+                (Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble),
+                x[1], x[2], x[3], x[4], x[5], x[6])
+    ptr == C_NULL && error("ulec_CreateMRG32k3a returned NULL")
+    return NativeGen(ptr, :ulec_DeleteGen, nothing, "ulec MRG32k3a")
+end
+
+function free!(g::NativeGen)
+    g.ptr == C_NULL && return nothing
+    if g.delete === :ucrypto_DeleteAES
+        ccall((:ucrypto_DeleteAES, libtestu01), Cvoid, (Ptr{Cvoid},), g.ptr)
+    elseif g.delete === :ulec_DeleteGen
+        ccall((:ulec_DeleteGen, libtestu01), Cvoid, (Ptr{Cvoid},), g.ptr)
+    else
+        error("no destructor for $(g.delete)")
+    end
+    g.ptr = C_NULL
+    return nothing
+end
+
+"""
     withgen(body, g) -> body(g)
 
 Run `body(g)` and free the generator afterwards, however it ends.
 """
-function withgen(body, g::Gen)
+function withgen(body, g::Union{Gen,NativeGen})
     try
         return body(g)
     finally
@@ -288,7 +363,7 @@ failures(stats::AbstractVector{Statistic}) = filter(s -> classify(s.p) === :fail
 for (jl, c) in ((:smallcrush, :bbattery_SmallCrush),
                 (:crush,      :bbattery_Crush),
                 (:bigcrush,   :bbattery_BigCrush))
-    @eval function $jl(g::Gen)
+    @eval function $jl(g::Union{Gen,NativeGen})
         GC.@preserve g begin
             ccall(($(QuoteNode(c)), libtestu01), Cvoid, (Ptr{Cvoid},), g.ptr)
         end
@@ -353,7 +428,7 @@ needs one more element than the battery has tests; element 0 is never read. The
 bit-level batteries need the same `nb`, `r` and `s` the original run used, or
 the replay is not a replication of it.
 """
-function repeat_battery(battery::Symbol, g::Gen, rep::Vector{Cint};
+function repeat_battery(battery::Symbol, g::Union{Gen,NativeGen}, rep::Vector{Cint};
                         nb::Real = 0, r::Integer = 0, s::Integer = 32)
     n = get(NTESTS, battery, nothing)
     n === nothing && error("no repeat battery for $battery")
