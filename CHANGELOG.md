@@ -29,6 +29,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Float64`, as on the CPU, which a consumer GPU runs slowly: about 0.6 billion
   a second on an RTX A1000.
 
+- **GPU fills compute each block of the generator once.** A large `rand!` or
+  `randn32!` into a `CuArray` runs one thread per block of the counter-based
+  generator, writing every draw whose words lie in it, where one thread per
+  element recomputed the whole block for each word. On an RTX A1000, `rand!`
+  in `Float32` from Philox4x32 doubles to the memory bound (41 billion a
+  second, cuRAND's 45), the 64-bit ciphers run three to four times faster in
+  `Float32` (Threefry4x64 three times in `Float64` too, Philox4x64 1.4 times),
+  and `randn32!` 1.3 to 3 times. Fills under 2^16 blocks, and `randn!`/`randexp!`,
+  whose `Float64` inversion is the work, keep one thread per element. The
+  values do not change. `scripts/benchmarks/gpu_fills.jl` measures every fill.
+
+- **Faster `Float32` and `Float16` normal fills on the CPU.** `randn!` and
+  `randexp!` into a narrower array went through the standard library's
+  one-draw-at-a-time fallback, which cost a counter-based generator twice its
+  `Float64` rate. A counter-based generator now fills block by block, through
+  the function its GPU kernel uses, and the others draw eight uniforms onto the
+  stack at a time. On one P-core of an Intel Core Ultra 9 285, `randn!` into a
+  `Float32` array went from 14.7 to 10.5 ns a value with Philox4x32, 21.4 to
+  11.4 with Threefry4x64, 12.4 to 8.5 with MRG32k3a, and 5.3 to 4.7 with
+  Xoshiro256++, and `randexp!` from 6.9 to 2.9 with Xoshiro256++; still without
+  allocation, and with the same values. `randn32!`, whose uniforms already fit
+  the array, keeps `rand!` and Φ⁻¹ in place, except where the uniforms are dear
+  enough for one pass to win: Threefry4x64 11.8 to 9.4 ns, Philox4x64 8.4 to
+  7.2, MRG32k3a 8.9 to 8.4.
+
 - **Box-Muller moves to `randn_boxmuller!`** (Philox4x32, `Float64` and
   `Float32`, as before), and **`randn_inversion!` is deprecated**: it forwards to
   `randn!`, which is inversion now.
