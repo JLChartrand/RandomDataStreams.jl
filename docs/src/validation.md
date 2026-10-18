@@ -196,7 +196,9 @@ reports 144 statistics, so a campaign of 51 runs produces 7344 of them, and
 0.002 × 7344 ≈ 15 lines are expected from chance alone — before any generator
 has done anything wrong. (The statistics within a run are not independent, as
 several tests compute more than one from the same stream; that widens the
-spread but leaves the expected count unchanged.)
+spread but leaves the expected count unchanged.) The count also assumes that a
+good generator's p-values are uniform on every statistic, and four of BigCrush's
+are not: see [CollisionOver on small alphabets](#CollisionOver-on-small-alphabets).
 
 The decision rule is in the TestU01 guide, under *Rejecting H₀*:
 
@@ -443,6 +445,126 @@ uniformity: **no suspect persists**. With the 64 × 1 sweep, the interleaved
 suite has passed BigCrush in four shapes, 10 880 statistics, for every
 generator.
 
+### The substreams suite in four shapes
+
+The other construction of L'Ecuyer et al. (2021), the substreams of a single
+stream, is the one cuRAND uses. It ran next, fixed before the sweep:
+
+- **runs:** 20 BigCrush runs of the [`substreams`
+  suite](#Dependence-between-streams), at commit `638e13c`, from a clean tree;
+- **generators:** the four counter-based generators and `MRG32k3a`;
+- **shapes:** the four shapes above;
+- **machine:** the same one, 20 runs at a time, 4.1 to 5.2 hours each.
+
+The streams are substreams 1 to S of each generator's first stream. For
+`Philox4x32-10` that is the key (0, 0), and for `MRG32k3a` the seed 12345 × 6:
+cuRAND's seed 0 in both cases, so these substreams are its subsequences, bit for
+bit.
+
+| shape (substreams × values) | runs | statistics | outside [0.001, 0.999] | failures |
+|---|---|---|---|---|
+| 16 × 8 | 5 | 800 | 3 | 0 |
+| 64 × 1 | 5 | 800 | 2 | 0 |
+| 256 × 2 | 5 | 800 | 3 | 0 |
+| 1024 × 1 | 5 | 800 | 3 | 0 |
+
+Of the 3200 statistics, **none was a failure**. The most extreme lay
+5.6 × 10⁻⁵ from 1 (`Philox4x32-10`, 1024 × 1, HammingIndep, L = 300). Eleven were
+singled out, against ≈6.4 expected. For comparison, the interleaved suite of the
+same five generators in the same four shapes singled out four of its 3200. Three
+of the eleven are CollisionOver at t = 21; see [CollisionOver on small
+alphabets](#CollisionOver-on-small-alphabets). Each was replayed three times in
+its own shape, on substreams 1025 and up of the same stream:
+
+| generator | shape | test | original | replay 1 | replay 2 | replay 3 |
+|---|---|---|---|---|---|---|
+| Philox4x32-10 | 1024 × 1 | HammingIndep, L = 300, r = 0 | 1 − 5.6 × 10⁻⁵ | 0.065 | 0.070 | 0.33 |
+| Philox4x64-10 | 64 × 1 | CollisionOver, t = 21 | 1.0 × 10⁻⁴ | 0.88 | 0.975 | 0.15 |
+| MRG32k3a | 16 × 8 | CollisionOver, t = 21 | 1.9 × 10⁻⁴ | 0.075 | 0.81 | 0.99 |
+| MRG32k3a | 256 × 2 | RandomWalk1 J, L = 50, r = 0 | 2.0 × 10⁻⁴ | 0.19 | 0.0015 | 0.76 |
+| Philox4x32-10 | 1024 × 1 | ClosePairs mNP1, t = 5 | 1 − 2.0 × 10⁻⁴ | 0.68 | 0.59 | 0.9971 |
+| Threefry4x64-20 | 16 × 8 | AppearanceSpacings, r = 0 | 4.3 × 10⁻⁴ | 0.0063 | 0.78 | 0.38 |
+| MRG32k3a | 64 × 1 | ClosePairs NP, t = 9 | 7.5 × 10⁻⁴ | 0.15 | 0.30 | 0.053 |
+| Philox4x32-10 | 16 × 8 | CollisionOver, t = 21 | 7.8 × 10⁻⁴ | 0.19 | 0.22 | 0.951 |
+| Threefry4x32-20 | 256 × 2 | CollisionOver, t = 2 | 8.6 × 10⁻⁴ | 0.52 | 0.25 | 0.64 |
+| Threefry4x32-20 | 256 × 2 | RandomWalk1 M, L = 50, r = 25 | 1 − 8.8 × 10⁻⁴ | 0.89 | 0.55 | 0.030 |
+| Threefry4x64-20 | 1024 × 1 | RandomWalk1 J, L = 10000, r = 0 | 9.9 × 10⁻⁴ | 0.66 | 0.85 | 0.66 |
+
+None of the 33 replications left [0.001, 0.999], and neither did any of the 99
+statistics the replays recompute. Under the rule of the four shapes above, no
+series called for more replications: no replay fell outside the interval on the
+side of its original, and no (generator, statistic) pair was singled out in two
+shapes. **No suspect persists.** Both constructions of the paper have now passed
+BigCrush for the four counter-based generators and `MRG32k3a`, in four shapes
+each.
+
+### CollisionOver on small alphabets
+
+Eight of the 37 BigCrush suspects above came from CollisionOver at t = 14 or
+t = 21, which are four of BigCrush's 160 statistics. Tests 3 to 12 of BigCrush
+are `smarsa_CollisionOver`. Each counts the collisions among n = 2 × 10⁷
+overlapping t-tuples of symbols from an alphabet of d, in d^t = 2⁴² cells, N = 30
+times. The five alphabets are (d, t) = (2²¹, 2), (2¹⁴, 3), (64, 7), (8, 14) and
+(4, 21), each at two values of r. TestU01 compares the total with a Poisson law
+of mean μ = N n²/(2 d^t) ≈ 1364.2, whose variance is μ too. But the tuples
+overlap. A collision between the tuples starting at i and j is followed by one
+between i + 1 and j + 1 whenever the next two symbols agree, which they do with
+probability 1/d. Collisions therefore come in clumps, and the variance of their
+number is (1 + 1/d)/(1 − 1/d) times μ:
+
+- 5/3 for d = 4 (tests 11 and 12, t = 21);
+- 9/7 for d = 8 (tests 9 and 10, t = 14);
+- 1.03 for d = 64, and indistinguishable from μ beyond.
+
+A calibration fixed in advance, decision rule included, put this to the test.
+It ran at commit `405fe65` with `scripts/testu01/calibrate.jl`, and replicated
+the tests on two generators:
+
+- TestU01's own AES, which the battery calls with no Julia code in between;
+- the package's `Philox4x32-10`, through the callback every campaign uses.
+
+In the table, R is the variance of the count over μ:
+
+| generator | d (tests) | replications | R | 95% interval | predicted |
+|---|---|---|---|---|---|
+| TestU01's AES | 2²¹ (3, 4) | 80 | 1.06 | [0.80, 1.49] | 1 |
+| TestU01's AES | 8 (9, 10) | 280 | 1.34 | [1.14, 1.60] | 1.29 |
+| TestU01's AES | 4 (11, 12) | 280 | 1.76 | [1.50, 2.10] | 1.67 |
+| Philox4x32-10 | 4 (11, 12) | 72 | 1.85 | [1.36, 2.64] | 1.67 |
+
+The mean count is μ in every arm, but the variance is not. The excess is the
+same through the callback as inside the library (F-test, p = 0.78). TestU01's
+MRG32k3a and the package's `MRG32k3a()`, which produce the same numbers, counted
+exactly the same collisions. The excess therefore belongs to the test, not to
+any generator. **For a perfect generator, each of tests 11 and 12 falls outside
+[0.001, 0.999] about 1.7% of the time instead of 0.2%, and each of tests 9 and
+10 about 0.6%**, by a normal approximation. In the calibration, 3.9% of the
+p-values at d = 4 fell below 0.01 and 2.5% above 0.99.
+
+That is what the tables above show. Over their 105 BigCrush runs:
+
+- tests 11 and 12 singled out six statistics, against ≈0.42 expected if the
+  test were calibrated and ≈3.5 given the variance measured;
+- tests 9 and 10 singled out two, against ≈0.42 and ≈1.3.
+
+None of these suspects persisted on replay. None could have become a failure
+this way either: under the larger variance, a count at TestU01's 10⁻¹⁰ is still
+4.9 standard deviations out, a few times 10⁻⁷ by the same approximation. The
+verdicts stand. What does not stand is reading a CollisionOver p-value at t = 14
+or 21 at face value. A correction, which compares the count with a variance of
+5/3 μ or 9/7 μ, has not been applied to anything on this page.
+
+```bash
+# one job of the calibration: TestU01's AES under key 1, tests 3, 4 and 9 to 12
+julia scripts/testu01/calibrate.jl --generator=aes --job=0 \
+      --tests=3:2,4:2,9:7,10:7,11:7,12:7 --out=<dir>
+```
+
+Each job writes the TestU01 log and `collisions.tsv`, which has one line per
+replication: the number of collisions, the p-value and the commit. The
+calibration ran 20 such AES jobs (keys 1 to 20) and three `Philox4x32-10` jobs
+(streams 4097 to 4099), 24 jobs at a time, in three hours.
+
 ## Long campaigns: running for days without a session
 
 `validate.jl` runs one battery in one process, serially. That is the wrong shape
@@ -688,9 +810,12 @@ Two things the suite cannot settle at SmallCrush level, and where the
   counter-based generators still need development. BigCrush passed on it for
   all seventeen generators in [four shapes](#The-interleaved-suite-in-four-shapes),
   from 16 streams of eight values to 1024 streams of one. For the counter-based
-  generators each of those streams has a key of its own; the other construction
-  the paper describes, the substreams of a single key — which is how cuRAND
-  hands out its Philox streams — has not been run.
+  generators each of those streams has a key of its own. The other
+  construction the paper describes, the substreams of a single key, is how
+  cuRAND hands out its Philox and MRG32k3a streams. It passed BigCrush [in the
+  same four shapes](#The-substreams-suite-in-four-shapes) for the four
+  counter-based generators and `MRG32k3a`, but has not been run on the other
+  twelve.
 
 Results belong in the JOSS submission, not in CI.
 

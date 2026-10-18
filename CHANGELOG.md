@@ -202,6 +202,28 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   suspect persists, and with 64 × 1 the interleaved suite has passed BigCrush in
   four shapes. See `docs/src/validation.md`.
 
+- **The substreams suite in the same four shapes**, the construction cuRAND
+  uses, fixed before the sweep: 20 BigCrush runs at `638e13c`, covering the four
+  counter-based generators and `MRG32k3a` on substreams of their first stream,
+  which is cuRAND's seed 0 for Philox4x32 and MRG32k3a. 3200 statistics, no
+  failure. Eleven suspects against ≈6.4 expected; all 33 replications, and
+  all 99 statistics the replays recompute, stayed inside [0.001, 0.999]. No
+  suspect persists: both constructions of L'Ecuyer et al. (2021) have passed
+  BigCrush for these five generators. See `docs/src/validation.md`.
+
+- **BigCrush's CollisionOver tests on small alphabets are miscalibrated**, for
+  every generator. TestU01 compares the number of collisions among overlapping
+  t-tuples with a Poisson law, but such collisions come in clumps. At d = 4
+  (tests 11 and 12, t = 21) the variance is about 5/3 of Poisson's, and at d = 8
+  (tests 9 and 10, t = 14) about 9/7. A calibration fixed in advance confirmed
+  it at `405fe65`, on TestU01's own AES, with no Julia code involved:
+  R = 1.76, 95% interval [1.50, 2.10], from 280 replications at d = 4.
+  Each of tests 11 and 12 therefore singles out a perfect generator about 1.7%
+  of the time instead of 0.2%. Eight of the 37 BigCrush suspects on the
+  validation page came from these four tests; none persisted, and no verdict
+  changes. See
+  "CollisionOver on small alphabets" in `docs/src/validation.md`.
+
 ## [0.3.0]
 
 Every float draw moves to the open interval `(0, 1)`, and the counter-based
