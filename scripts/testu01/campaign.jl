@@ -17,9 +17,12 @@
 #   --bits-battery=<name>[,<name>]        what the bits suite runs
 #                                         (default alphabit,rabbit)
 #   --bits=<n>                            size for alphabit/rabbit
-#   --suite=<suite>[,<suite>]|all         single, interleaved, bits; default all
-#   --shapes=<s>x<v>[,<s>x<v>]            interleaved shapes: s streams, v values
-#                                         from each in turn (default 64x1)
+#   --suite=<suite>[,<suite>]|all         single, interleaved, substreams, bits;
+#                                         default all, which is the three
+#                                         suites but substreams
+#   --shapes=<s>x<v>[,<s>x<v>]            interleaved and substreams shapes: s
+#                                         streams, v values from each in turn
+#                                         (default 64x1)
 #   --generator=<name>[,<name>]|all       default all
 #   --jobs=<n>                            concurrent processes (default: cores/4)
 #   --out=<dir>                           default testu01-results
@@ -29,7 +32,7 @@
 #
 # Resuming. `summary.tsv` in the output directory is the record of finished
 # work: one line per (battery, suite, generator) that completed, and for the
-# interleaved suite per shape. Re-running the same command skips those and does
+# interleaved and substreams suites per shape. Re-running the same command skips those and does
 # the rest. Interrupting loses only the jobs actually in flight.
 #
 # Stopping cleanly. `touch <out>/STOP` makes the driver stop launching new jobs
@@ -52,7 +55,13 @@ const PROV = provenance()
 
 const HERE      = @__DIR__
 const VALIDATE  = joinpath(HERE, "validate.jl")
-const SUITES    = ["single", "interleaved", "bits"]
+const SUITES    = ["single", "interleaved", "substreams", "bits"]
+# What `all` means. It predates the substreams suite, and a results directory
+# started with it must resume the same matrix, so the fourth suite is run only
+# when named.
+const ALL_SUITES = ["single", "interleaved", "bits"]
+# The suites that interleave several streams, and so run once per shape.
+const SHAPED_SUITES = ("interleaved", "substreams")
 const BATTERIES = ["smallcrush", "crush", "bigcrush", "alphabit", "rabbit"]
 
 "Batteries that take a size in bits, which is forwarded to the jobs."
@@ -133,15 +142,15 @@ end
 """
     batteries_for(suite, opts) -> Vector{String}
 
-The batteries a campaign runs on one suite: `--battery` for `single` and
-`interleaved`, and `--bits-battery` for `bits` -- two batteries by default,
+The batteries a campaign runs on one suite: `--battery` for every suite but
+`bits`, and `--bits-battery` for `bits` -- two batteries by default,
 which is why the matrix is no longer one job per (suite, generator).
 """
 batteries_for(suite, opts) =
     suite == "bits" ? opts["bits-battery"] : [opts["battery"]]
 
-"The shapes a suite runs in: `--shapes` for `interleaved`, none for the others."
-shapes_for(suite, opts) = suite == "interleaved" ? opts["shapes"] : [""]
+"The shapes a suite runs in: `--shapes` for the two interleaving ones, none for the others."
+shapes_for(suite, opts) = suite in SHAPED_SUITES ? opts["shapes"] : [""]
 
 # `all`, or a comma-separated list checked against what exists: a misspelt name
 # must stop the campaign before it starts, not fail one job hours into it.
@@ -156,17 +165,17 @@ end
 
 function matrix(opts)
     names  = selection(opts["generator"], generator_names(), "generator")
-    suites = selection(opts["suite"], SUITES, "suite")
+    suites = opts["suite"] == "all" ? ALL_SUITES : selection(opts["suite"], SUITES, "suite")
     return [(b, s, g, h) for s in suites for h in shapes_for(s, opts)
                          for g in names for b in batteries_for(s, opts)]
 end
 
 # A job is (battery, suite, generator, shape), the shape empty outside the
-# interleaved suite. Both summary files keep streams and values in columns 12
+# interleaved and substreams suites. Both summary files keep streams and values in columns 12
 # and 13; a line without them predates --shapes and ran the default.
 function job_key(fields)
     b, s, g = String(fields[2]), String(fields[3]), String(fields[4])
-    s == "interleaved" || return (b, s, g, "")
+    s in SHAPED_SUITES || return (b, s, g, "")
     st = length(fields) >= 13 ? fields[12] : ""
     va = length(fields) >= 13 ? fields[13] : ""
     return (b, s, g, isempty(st) || isempty(va) ? DEFAULT_SHAPE : "$(st)x$(va)")
@@ -231,8 +240,8 @@ function reap!(running, out, log)
         b, s, g, h = r.job
         elapsed = time() - r.started
         okay = success(r.proc)
-        note(log, string(describe(r.job), " ",
-                         okay ? "done" : "FAILED (exit $(r.proc.exitcode))", " in ", human(elapsed)))
+        note(log, string(describe(r.job), " ", okay ? "done" : failure(r.proc),
+                         " in ", human(elapsed)))
         st, va = isempty(h) ? ("", "") : shape_parts(h)
         okay && open(joinpath(out, "summary.tsv"), "a") do io
             println(io, join((now(), b, s, g, round(elapsed, digits = 1),
@@ -244,6 +253,17 @@ function reap!(running, out, log)
 end
 
 # Reporting --------------------------------------------------------------------
+
+# A job killed by a signal has no exit code of its own -- the field reads 0 --
+# so it is the signal that says what happened: SIGTERM from someone's `kill`,
+# SIGKILL from the OOM killer, SIGSEGV from a crash in C.
+const SIGNAL_NAMES = Dict(1 => "SIGHUP", 2 => "SIGINT", 6 => "SIGABRT", 9 => "SIGKILL",
+                          11 => "SIGSEGV", 15 => "SIGTERM")
+
+function failure(proc)
+    proc.termsignal == 0 && return "FAILED (exit $(proc.exitcode))"
+    return "FAILED (killed by $(get(SIGNAL_NAMES, proc.termsignal, "signal $(proc.termsignal)")))"
+end
 
 function human(seconds)
     seconds < 90 && return @sprintf("%.0f s", seconds)

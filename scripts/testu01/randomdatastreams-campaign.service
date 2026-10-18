@@ -1,12 +1,14 @@
 # systemd *user* unit for a validation campaign that outlives the SSH session.
 #
-# `nohup` survives a logout; `tmux` survives a logout and lets you reattach;
-# neither survives a reboot, and neither restarts a driver that died. A BigCrush
-# sweep runs for days or weeks, so it wants a supervisor.
+# `setsid nohup` survives a logout; `tmux` survives a logout and lets you
+# reattach, unless it was built to move its panes into the systemd user
+# manager, which stops at the last logout without linger; neither survives a
+# reboot, and neither restarts a driver that died. A BigCrush sweep runs for
+# days or weeks, so it wants a supervisor.
 #
 # This unit is the best of the supervisors, but it needs `enable-linger`,
 # which on a shared machine only an administrator can grant. Where that is
-# refused, `scripts/run-campaign.sh --supervisor=tmux --watchdog` gets back
+# refused, `scripts/run-campaign.sh --supervisor=detached --watchdog` gets back
 # logout-, reboot- and crash-survival through a user crontab entry instead. See
 # docs/src/validation.md.
 #

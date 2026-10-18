@@ -28,9 +28,11 @@
 # --bits-battery to campaign.jl directly to change that.
 #
 # A campaign need not run the whole matrix. --suite=<suite>[,<suite>] keeps
-# some of single, interleaved and bits, and --shapes=<s>x<v>[,<s>x<v>] runs the
-# interleaved suite in each of those shapes -- s streams, v values from each in
-# turn -- instead of the default 64x1. Both are recorded next to the results,
+# some of single, interleaved and bits, or asks for substreams, which the whole
+# matrix leaves out; --shapes=<s>x<v>[,<s>x<v>] runs the interleaved and
+# substreams suites in each of those shapes -- s streams, v values from each in
+# turn -- instead of the default 64x1; --generator=<name>[,<name>] keeps some of
+# the generators. All three are recorded next to the results,
 # so that `status`, `stop` and the watchdog run against the same matrix without
 # being told again.
 #
@@ -41,14 +43,20 @@
 # Supervisors. A systemd user unit is the best of them -- it restarts a driver
 # that died and comes back after a reboot -- but it only outlives your login if
 # `loginctl enable-linger` has been run for your account, which on a shared
-# machine is the administrator's call. Where that is refused, --supervisor=tmux
-# runs the campaign in a detached session instead, and --watchdog recovers what
-# systemd was giving you:
+# machine is the administrator's call. Where that is refused,
+# --supervisor=detached runs the driver in a session of its own (setsid, nohup,
+# a pidfile), and --watchdog recovers what systemd was giving you:
 #
-#     ./scripts/run-campaign.sh run --battery=crush --supervisor=tmux --watchdog
+#     ./scripts/run-campaign.sh run --battery=crush --supervisor=detached --watchdog
 #
 #   --supervisor=auto     systemd if linger is on or can be turned on, else
-#                         tmux (the default)
+#                         detached (the default)
+#   --supervisor=tmux     a detached tmux session you can attach to -- but only
+#                         where tmux leaves its panes in your login session.
+#                         A tmux built with systemd support moves them into the
+#                         user manager, which without linger stops, and kills
+#                         them, when your last session ends; `start` checks,
+#                         and refuses.
 #   --watchdog            a user crontab entry that restarts the campaign if it
 #                         is not running, and at reboot. Needs no privileges,
 #                         and `stop` removes it again.
@@ -76,7 +84,8 @@ BITS=""                     # size for the bit-level batteries; campaign.jl's de
 BITS_OPT=""                 # "--bits=N" when BITS is set, empty otherwise
 SUITE=""                    # suites to run; campaign.jl's default (all) applies when empty
 SHAPES=""                   # interleaved shapes; campaign.jl's default (64x1) applies when empty
-MATRIX_OPT=""               # the two above as campaign.jl options, recorded in $OUT/matrix
+GENERATOR=""                # generators to run; campaign.jl's default (all) applies when empty
+MATRIX_OPT=""               # the three above as campaign.jl options, recorded in $OUT/matrix
 SKIP_CALIBRATION=0
 OUT=""
 JOBS=""
@@ -117,12 +126,13 @@ unit_name() { echo "randomdatastreams-$BATTERY"; }
 unit_file() { echo "$HOME/.config/systemd/user/$(unit_name).service"; }
 session()   { echo "randomdatastreams-$BATTERY"; }
 sup_file()  { echo "$OUT/supervisor"; }
+pid_file()  { echo "$OUT/driver.pid"; }      # the detached supervisor's driver
 matrix_file() { echo "$OUT/matrix"; }
 launcher()  { echo "$OUT/campaign-command.sh"; }
 # Not campaign.log: campaign.jl writes that one itself, through note(), while
-# the tmux supervisor pipes the same stdout through `tee`. Aimed at a single
+# the tmux and detached supervisors send the same stdout here. Aimed at a single
 # file the two of them wrote every line twice, which `status` then showed back
-# doubled. The tee earns its own file rather than being dropped -- it catches
+# doubled. This file earns its place rather than being dropped -- it catches
 # what never reaches note(): a Julia stack trace, a bash error out of the
 # launcher, anything the driver said on its way down.
 runlog()    { echo "$OUT/supervisor.log"; }
@@ -138,6 +148,7 @@ parse_args() {
             --skip-calibration) SKIP_CALIBRATION=1 ;;
             --suite=*)        SUITE="${a#*=}" ;;
             --shapes=*)       SHAPES="${a#*=}" ;;
+            --generator=*)    GENERATOR="${a#*=}" ;;
             --allow-dirty)    ALLOW_DIRTY=1 ;;
             --supervisor=*)   SUPERVISOR="${a#*=}" ;;
             --watchdog)       WATCHDOG=1 ;;
@@ -157,11 +168,12 @@ parse_args() {
     if [ -n "$BITS" ]; then BITS_OPT="--bits=$BITS"; fi
     if [ -n "$SUITE" ]; then MATRIX_OPT="--suite=$SUITE"; fi
     if [ -n "$SHAPES" ]; then MATRIX_OPT="${MATRIX_OPT:+$MATRIX_OPT }--shapes=$SHAPES"; fi
+    if [ -n "$GENERATOR" ]; then MATRIX_OPT="${MATRIX_OPT:+$MATRIX_OPT }--generator=$GENERATOR"; fi
     resolve_matrix
 
     case "$SUPERVISOR" in
-        ""|auto|systemd|tmux) ;;
-        *) die "unknown supervisor: $SUPERVISOR (auto, systemd, tmux)" ;;
+        ""|auto|systemd|detached|tmux) ;;
+        *) die "unknown supervisor: $SUPERVISOR (auto, systemd, detached, tmux)" ;;
     esac
 }
 
@@ -383,9 +395,9 @@ systemd_usable() { systemctl --user show-environment >/dev/null 2>&1; }
 linger_on()      { [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = "yes" ]; }
 
 # Whether logging out kills what you leave behind. With KillUserProcesses=yes a
-# detached tmux dies at logout exactly as an unlingered service does, so tmux is
-# not a workaround there and the campaign needs linger after all -- worth
-# knowing before a two-week sweep, not after.
+# detached driver dies at logout exactly as an unlingered service does, so
+# neither detached nor tmux is a workaround there and the campaign needs linger
+# after all -- worth knowing before a two-week sweep, not after.
 kill_user_processes() {
     local v
     v=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
@@ -410,7 +422,7 @@ resolve_matrix() {
     fi
 }
 
-# A campaign that was started under tmux must still be visible to `status` and
+# A campaign that was started detached must still be visible to `status` and
 # stoppable by `stop` when those are called without the flag, so the choice is
 # recorded next to the results and read back here. Re-deriving it instead would
 # quietly look at the wrong supervisor on a machine where both are available.
@@ -428,14 +440,16 @@ resolve_supervisor() {
         elif systemd_usable && loginctl enable-linger "$USER" 2>/dev/null; then
             SUPERVISOR=systemd
             info "supervisor: systemd (linger enabled for $USER just now)"
-        elif have tmux; then
-            SUPERVISOR=tmux
-            info "supervisor: tmux -- systemd was not usable without linger,"
+        elif have setsid; then
+            # Not tmux, which was the fallback until a tmux built with systemd
+            # support took a sweep down with the last login (see in_user_manager).
+            SUPERVISOR=detached
+            info "supervisor: detached -- systemd was not usable without linger,"
             info "            which only an administrator can grant here"
         else
             die "no usable supervisor: systemd needs linger (ask an administrator
-       for 'loginctl enable-linger $USER'), and tmux is not installed.
-       'apt install tmux', or run campaign.jl in the foreground."
+       for 'loginctl enable-linger $USER'), and setsid is not installed
+       (util-linux). Install it, or run campaign.jl in the foreground."
         fi
     else
         info "supervisor: $SUPERVISOR (${why:-you chose it})"
@@ -445,9 +459,10 @@ resolve_supervisor() {
         systemd)
             systemd_usable || die "systemctl --user is not available in this session"
             linger_on || info "WARNING: linger is off, so this service stops at logout.
-       Ask for 'loginctl enable-linger $USER', or use --supervisor=tmux."
+       Ask for 'loginctl enable-linger $USER', or use --supervisor=detached."
             ;;
-        tmux)   have tmux || die "tmux is not installed" ;;
+        detached) have setsid || die "setsid is not installed (util-linux)" ;;
+        tmux)     have tmux || die "tmux is not installed" ;;
     esac
 
     if [ "$SUPERVISOR" != systemd ]; then
@@ -455,11 +470,11 @@ resolve_supervisor() {
         kill_user_processes || kup=$?
         if [ "$kup" -eq 0 ]; then
             info "WARNING: logind has KillUserProcesses=yes on this machine, so a"
-            info "         detached $SUPERVISOR session is killed at logout too."
+            info "         $SUPERVISOR driver is killed at logout too."
             info "         Only linger fixes that -- ask an administrator."
         elif [ "$kup" -eq 2 ]; then
             info "note: could not read logind's KillUserProcesses setting. If it is"
-            info "      'yes' on this machine, a detached session dies at logout."
+            info "      'yes' on this machine, a $SUPERVISOR driver dies at logout."
         fi
         info "note: $SUPERVISOR does not survive a reboot and does not restart a"
         info "      driver that died. --watchdog covers both, through cron."
@@ -590,9 +605,10 @@ calibrate() {
 
 # ------------------------------------------------------------------ launching
 
-# The exact command, written down once. systemd gets it through ExecStart; tmux
-# runs this file. Having it on disk also means `status` can show what
-# is running, and a watchdog can restart it without re-deriving --jobs.
+# The exact command, written down once. systemd gets it through ExecStart; the
+# detached and tmux supervisors run this file. Having it on disk also means
+# `status` can show what is running, and a watchdog can restart it without
+# re-deriving --jobs.
 #
 # cron gives a near-empty PATH, so the interpreter is resolved here and now.
 write_launcher() {
@@ -633,10 +649,34 @@ EOF
 
 is_running() {
     case "$SUPERVISOR" in
-        systemd) systemctl --user is-active --quiet "$(unit_name)" ;;
-        tmux)    tmux has-session -t "=$(session)" 2>/dev/null ;;
-        *)       return 1 ;;      # no supervisor resolved yet: nothing is running
+        systemd)  systemctl --user is-active --quiet "$(unit_name)" ;;
+        detached) driver_alive ;;
+        tmux)     tmux has-session -t "=$(session)" 2>/dev/null ;;
+        *)        return 1 ;;      # no supervisor resolved yet: nothing is running
     esac
+}
+
+# The pidfile names the driver, but a pid is reused once its process is gone,
+# so the process found there must still be a campaign driver to count.
+driver_alive() {
+    local pid
+    pid=$(cat "$(pid_file)" 2>/dev/null) || return 1
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+    ps -p "$pid" -o args= 2>/dev/null | matches -F "campaign.jl"
+}
+
+# Whether a process lives under the systemd user manager, user@<uid>.service,
+# rather than in the scope of the login or cron job that started it.
+#
+# tmux built with systemd support moves each pane it spawns into a scope of its
+# own under that manager, so that the pane outlives the terminal it came from.
+# Without linger the manager is stopped when your last session ends, and every
+# scope under it with it. KillUserProcesses=no does not help: it spares what
+# stays in a session's scope, and the pane has left it. On 2026-10-16 that took
+# a BigCrush sweep's driver and its 24 jobs, five hours in, with the last
+# logout -- exactly what tmux was there to survive.
+in_user_manager() {
+    [ -r "/proc/$1/cgroup" ] && matches -E '/user@[0-9]+\.service/' "/proc/$1/cgroup"
 }
 
 # --- start --------------------------------------------------------------------
@@ -646,6 +686,24 @@ start_supervised() {
         systemd)
             [ -f "$(unit_file)" ] || die "no unit for $BATTERY yet -- run 'prepare' first"
             systemctl --user start "$(unit_name)"
+            ;;
+        detached)
+            [ -x "$(launcher)" ] || die "no launcher at $(launcher) -- run 'prepare' first"
+            # A session of its own, so no terminal's hangup reaches it, left in
+            # the scope of the login or cron job that started it, which
+            # KillUserProcesses=no spares when that session ends. The pid is
+            # written by the process itself before it becomes the launcher, and
+            # the launcher execs the driver, so the file names the driver --
+            # and the leader of its process group -- whether or not setsid had
+            # to fork.
+            rm -f "$(pid_file)"
+            setsid nohup bash -c 'echo $$ > "$1"; exec bash "$2"' _ "$(pid_file)" "$(launcher)" \
+                >> "$(runlog)" 2>&1 < /dev/null &
+            local waited=0
+            while [ ! -s "$(pid_file)" ] && [ "$waited" -lt 100 ]; do
+                sleep 0.1; waited=$((waited + 1))
+            done
+            [ -s "$(pid_file)" ] || die "the driver did not start -- see $(runlog)"
             ;;
         tmux)
             [ -x "$(launcher)" ] || die "no launcher at $(launcher) -- run 'prepare' first"
@@ -658,6 +716,19 @@ start_supervised() {
             mkdir -p "$TMUX_TMPDIR"; chmod 700 "$TMUX_TMPDIR"
             tmux new-session -d -s "$(session)" \
                  "bash '$(launcher)' 2>&1 | tee -a '$(runlog)'"
+            # Asked of the pane itself, once tmux has placed it: whether this
+            # tmux was built with systemd support is not something to guess.
+            local pane=""
+            sleep 1
+            pane=$(tmux display-message -p -t "$(session):" '#{pane_pid}' 2>/dev/null) || true
+            if [ -n "$pane" ] && in_user_manager "$pane" && ! linger_on; then
+                tmux kill-session -t "=$(session)" 2>/dev/null || true
+                die "this tmux moved the campaign into your systemd user manager,
+       which without linger is stopped -- and the campaign with it -- when
+       your last session ends. Stopped it again before it started a job.
+       Use the detached supervisor instead:
+         $0 start --battery=$BATTERY --supervisor=detached"
+            fi
             ;;
     esac
 }
@@ -671,6 +742,28 @@ stop_supervised() {
     case "$SUPERVISOR" in
         systemd)
             systemctl --user stop "$(unit_name)"
+            ;;
+        detached)
+            if ! driver_alive; then
+                info "no driver running (no live process in $(pid_file))"
+                rm -f "$(pid_file)"
+                return
+            fi
+            local pid waited=0
+            pid=$(cat "$(pid_file)")
+            # To the whole process group, which the driver leads and its jobs
+            # belong to: what Ctrl-C does in a terminal, and what the tmux
+            # supervisor's send-keys amounts to.
+            kill -INT -- "-$pid"
+            info "SIGINT sent; waiting for the jobs in flight (up to 6h)"
+            while driver_alive && [ "$waited" -lt 21600 ]; do
+                sleep 5; waited=$((waited + 5))
+            done
+            if driver_alive; then
+                info "still running after 6h -- killing it"
+                kill -KILL -- "-$pid" 2>/dev/null || true
+            fi
+            rm -f "$(pid_file)"
             ;;
         tmux)
             if ! is_running; then
@@ -842,14 +935,20 @@ cmd_start() {
     # a `stop` destroyed the campaign's ticket cache, and the launcher names it
     check_kerberos
     start_supervised
+    # `start --supervisor=...` may name another supervisor than `prepare` did,
+    # as the tmux refusal tells you to; status, stop and the watchdog must then
+    # look for this one.
+    printf '%s\n' "$SUPERVISOR" > "$(sup_file)"
     if [ "$WATCHDOG" -eq 1 ]; then
         install_watchdog
     fi
 
     say "Started"
     case "$SUPERVISOR" in
-        systemd) systemctl --user --no-pager status "$(unit_name)" | head -12 || true ;;
-        tmux)    info "session: $(session)   attach with: tmux attach -t $(session)" ;;
+        systemd)  systemctl --user --no-pager status "$(unit_name)" | head -12 || true ;;
+        detached) info "driver: pid $(cat "$(pid_file)"), in a session of its own"
+                  info "        follow with: tail -f $(runlog)" ;;
+        tmux)     info "session: $(session)   attach with: tmux attach -t $(session)" ;;
     esac
     if [ "$SUPERVISOR" != systemd ]; then
         info "log:     $(runlog)"
@@ -895,11 +994,13 @@ cmd_status() {
             systemctl --user --no-pager status "$(unit_name)" 2>/dev/null | head -12 \
                 || info "not running"
             ;;
-        tmux)
+        detached|tmux)
+            local what="session $(session)"
+            [ "$SUPERVISOR" = detached ] && what="driver (pidfile $(pid_file))"
             if is_running; then
-                info "session $(session): running"
+                info "$what: running"
             else
-                info "session $(session): not running"
+                info "$what: not running"
             fi
             if [ -f "$(runlog)" ]; then
                 info "last lines of $(runlog):"
