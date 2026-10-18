@@ -6,6 +6,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0]
+
+Normals and exponentials are drawn by inversion on every generator, with the
+same bits on the CPU and the GPU, and the package reproduces cuRAND's Philox
+and MRG32k3a streams word for word.
+
+### Breaking
+
+- **Every normal and exponential sequence changes.** `randn`, `randexp` and
+  their `!` forms draw by inversion, on the CPU and, for the counter-based
+  generators, on the GPU; the uniforms do not change. Code that must reproduce
+  normals or exponentials drawn under 0.3 needs to stay on 0.3.
+- **On the GPU, `randn!` is no longer Box-Muller.** Code that wants the old
+  Box-Muller fill calls `randn_boxmuller!` (Philox4x32, `Float64` and
+  `Float32`, as before).
+
 ### Changed
 
 - **`randn` and `randexp` draw by inversion, on every generator.** `randn(rng)`
@@ -397,6 +413,12 @@ generators gain GPU fills through a CUDA extension.
 
 Two new generator families, and one breaking change to seeding.
 
+**Never registered.** `Project.toml` said 0.2.0 from `e6376ae` (2026-08-31)
+until 0.3.0, but no 0.2.0 reached the General registry. Its changes first
+reached users with 0.3.0, so anyone upgrading from 0.1.0 meets the breaking
+change below there. The comparison link runs from `6449bd8`, the commit 0.1.0
+was registered from, to `e6376ae`.
+
 ### Breaking
 
 - **The all-zero state is now refused everywhere.** It is a fixed point of the
@@ -452,6 +474,7 @@ Initial release: `MRG32k3a` and the xoshiro/xoroshiro families, with the stream
 and substream object model of L'Ecuyer et al. (2002). Registered without a git
 tag, which is why there is no comparison link for it below.
 
-[Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/JLChartrand/RandomDataStreams.jl/releases/tag/v0.2.0
+[Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/e6376ae...v0.3.0
+[0.2.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/6449bd8...e6376ae
