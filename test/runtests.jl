@@ -1400,6 +1400,24 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
             @test rand(r, Float32) == u32[2]
         end
 
+        # the narrow-float fills of the counter-based generators run block by
+        # block, from wherever the stream stands: the same values as the scalar
+        # draws, and the stream left where they would leave it
+        for G in (PhiloxRNG, Philox4x64RNG, Threefry4x32RNG, Threefry4x64RNG), pre in 0:5,
+            n in (1, 7, 8, 9, 64, 1001)
+            start = G(20261016)
+            for _ in 1:pre
+                rand(start, UInt32)
+            end
+            for (fill!, f, U, T) in ((randn!, norminv, Float64, Float32), (randn!, norminv, Float64, Float16),
+                                     (randexp!, R._expinv, Float64, Float32), (randn32!, norminv, Float32, Float32))
+                a, b = copy(start), copy(start)
+                @test fill!(a, Vector{T}(undef, n)) == [convert(T, f(rand(b, U))) for _ in 1:n]
+                @test get_state(a)[1] == get_state(b)[1] && get_state(a)[4] == get_state(b)[4]
+                @test rand(a, UInt32) == rand(b, UInt32)
+            end
+        end
+
         # moments, on the word grid and on the MRG's
         for mk in (makers[1], makers[8], makers[14])
             z = randn(mk(), 400_000)
@@ -1473,6 +1491,40 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
                         @test get_state(a)[4] == get_state(b)[4]
                         @test rand(a, UInt32) == rand(b, UInt32)
                     end
+                end
+            end
+        end
+
+        # the same draws organised by block, as a kernel with one thread per block
+        # computes them: every block once, every draw whose first word lies in it,
+        # through the map a fill applies -- including a pair straddling two blocks
+        for G in (PhiloxRNG, Philox4x64RNG, Threefry4x32RNG, Threefry4x64RNG)
+            @testset "$(R._variant_name(G)) by block" begin
+                for (U, T, f) in ((Float64, Float64, identity), (Float32, Float32, identity),
+                                  (Float16, Float16, identity), (Float64, Float32, norminv),
+                                  (Float64, Float64, R._expinv), (Float32, Float32, norminv)),
+                    c in starts, pre in 0:5, n in (1, 2, 3, 5, 8, 13, 64)
+                    rng = G(12345)
+                    rng.ctr = c
+                    for _ in 1:pre
+                        rand(rng, UInt32)
+                    end
+                    hi, lo, w0 = R._draw_position(rng)
+                    W = eltype(rng.key)
+                    N = length(R._block_at(G, rng.key, hi, lo, UInt64(0)))
+                    expected = [convert(T, f(R._draw_at(U, G, rng.key, hi, lo, w0, k))) for k in 0:n-1]
+                    nb = R._blocks_spanned(U, W, N, w0, n)
+                    for S in (U === Float64 && W === UInt32 && isodd(w0) ? (true,) : (false, true))
+                        A = fill(T(NaN), n)
+                        for b in 0:nb-1
+                            R._fill_block!(A, f, U, G, rng.key, hi, lo, w0, n, b, Val(S))
+                        end
+                        @test isequal(A, expected)
+                    end
+                    # one block past the last writes nothing
+                    A = fill(T(NaN), n)
+                    R._fill_block!(A, f, U, G, rng.key, hi, lo, w0, n, nb, Val(true))
+                    @test all(isnan, A)
                 end
             end
         end

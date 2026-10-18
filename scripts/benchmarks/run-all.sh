@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Run every benchmark in this directory, in order: throughput.jl (CPU, every
-# generator) first, then gpu_throughput.jl (CPU vs GPU, Philox4x32-10 only;
-# skips itself with a message if CUDA.functional() is false). Each still
+# generator) first, then gpu_throughput.jl (CPU vs GPU, Philox4x32-10 only)
+# and gpu_fills.jl (every device fill of every counter-based generator); both
+# skip themselves with a message if CUDA.functional() is false. Each still
 # prints its usual report to stdout as it runs -- this script's own job is
 # the sequencing, a results directory, and making sure a number saved today
 # can still be read in six months:
@@ -10,6 +11,7 @@
 #   results/<timestamp>/sysinfo.txt        -- host, OS, Julia, GPU/CUDA
 #   results/<timestamp>/throughput.csv     -- every number from throughput.jl
 #   results/<timestamp>/gpu_throughput.csv -- every number from gpu_throughput.jl
+#   results/<timestamp>/gpu_fills.csv      -- every number from gpu_fills.jl
 #
 # Works from anywhere, not just this directory.
 #
@@ -28,5 +30,6 @@ cat "$OUT_DIR/sysinfo.txt"
 
 julia -O3 "$SCRIPT_DIR/throughput.jl" "$OUT_DIR/throughput.csv"
 julia -O3 "$SCRIPT_DIR/gpu_throughput.jl" "$OUT_DIR/gpu_throughput.csv"
+julia -O3 "$SCRIPT_DIR/gpu_fills.jl" "$OUT_DIR/gpu_fills.csv"
 
 echo "Done. Results saved under $OUT_DIR"

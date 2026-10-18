@@ -380,10 +380,11 @@ rand!(rng, A)          # on the device: the values rand! gives on the CPU
 rand(rng)              # on the host: the draw that follows them
 ```
 
-Element `k` is computed by its own thread as a pure function of the key, the
-counter and `k` — the same words, in the same order, through the same
-[`open01`](@ref) conversion as the stream object — so the result does not depend
-on the number of threads or on the launch configuration. The conversion's one
+Element `k` is a pure function of the key, the counter and `k` — the same
+words, in the same order, through the same [`open01`](@ref) conversion as the
+stream object — so the result does not depend on the number of threads or on
+the launch configuration. Each thread computes one block of the generator, once,
+and writes every draw whose words lie in it. The conversion's one
 floating-point operation is a subtraction whose exact result is representable,
 which IEEE 754 fixes to the last bit on any device. The test suite
 checks the position-addressed draws against the stream object on the CPU, and
