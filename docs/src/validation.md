@@ -196,7 +196,9 @@ reports 144 statistics, so a campaign of 51 runs produces 7344 of them, and
 0.002 × 7344 ≈ 15 lines are expected from chance alone — before any generator
 has done anything wrong. (The statistics within a run are not independent, as
 several tests compute more than one from the same stream; that widens the
-spread but leaves the expected count unchanged.)
+spread but leaves the expected count unchanged.) The count also assumes that a
+good generator's p-values are uniform on every statistic, and four of BigCrush's
+are not: see [CollisionOver on small alphabets](#CollisionOver-on-small-alphabets).
 
 The decision rule is in the TestU01 guide, under *Rejecting H₀*:
 
@@ -442,6 +444,73 @@ All sixty stayed inside [0.001, 0.999], and each series is consistent with
 uniformity: **no suspect persists**. With the 64 × 1 sweep, the interleaved
 suite has passed BigCrush in four shapes, 10 880 statistics, for every
 generator.
+
+### CollisionOver on small alphabets
+
+Five of the 26 BigCrush suspects above came from CollisionOver at t = 14 or
+t = 21, which are four of BigCrush's 160 statistics. Tests 3 to 12 of BigCrush
+are `smarsa_CollisionOver`. Each counts the collisions among n = 2 × 10⁷
+overlapping t-tuples of symbols from an alphabet of d, in d^t = 2⁴² cells, N = 30
+times. The five alphabets are (d, t) = (2²¹, 2), (2¹⁴, 3), (64, 7), (8, 14) and
+(4, 21), each at two values of r. TestU01 compares the total with a Poisson law
+of mean μ = N n²/(2 d^t) ≈ 1364.2, whose variance is μ too. But the tuples
+overlap. A collision between the tuples starting at i and j is followed by one
+between i + 1 and j + 1 whenever the next two symbols agree, which they do with
+probability 1/d. Collisions therefore come in clumps, and the variance of their
+number is (1 + 1/d)/(1 − 1/d) times μ:
+
+- 5/3 for d = 4 (tests 11 and 12, t = 21);
+- 9/7 for d = 8 (tests 9 and 10, t = 14);
+- 1.03 for d = 64, and indistinguishable from μ beyond.
+
+A calibration fixed in advance, decision rule included, put this to the test.
+It ran at commit `405fe65` with `scripts/testu01/calibrate.jl`, and replicated
+the tests on two generators:
+
+- TestU01's own AES, which the battery calls with no Julia code in between;
+- the package's `Philox4x32-10`, through the callback every campaign uses.
+
+In the table, R is the variance of the count over μ:
+
+| generator | d (tests) | replications | R | 95% interval | predicted |
+|---|---|---|---|---|---|
+| TestU01's AES | 2²¹ (3, 4) | 80 | 1.06 | [0.80, 1.49] | 1 |
+| TestU01's AES | 8 (9, 10) | 280 | 1.34 | [1.14, 1.60] | 1.29 |
+| TestU01's AES | 4 (11, 12) | 280 | 1.76 | [1.50, 2.10] | 1.67 |
+| Philox4x32-10 | 4 (11, 12) | 72 | 1.85 | [1.36, 2.64] | 1.67 |
+
+The mean count is μ in every arm, but the variance is not. The excess is the
+same through the callback as inside the library (F-test, p = 0.78). TestU01's
+MRG32k3a and the package's `MRG32k3a()`, which produce the same numbers, counted
+exactly the same collisions. The excess therefore belongs to the test, not to
+any generator. **For a perfect generator, each of tests 11 and 12 falls outside
+[0.001, 0.999] about 1.7% of the time instead of 0.2%, and each of tests 9 and
+10 about 0.6%**, by a normal approximation. In the calibration, 3.9% of the
+p-values at d = 4 fell below 0.01 and 2.5% above 0.99.
+
+That is what the tables above show. Over their 85 BigCrush runs:
+
+- tests 11 and 12 singled out three statistics, against ≈0.34 expected if the
+  test were calibrated and ≈2.8 given the variance measured;
+- tests 9 and 10 singled out two, against ≈0.34 and ≈1.1.
+
+None of these suspects persisted on replay. None could have become a failure
+this way either: under the larger variance, a count at TestU01's 10⁻¹⁰ is still
+4.9 standard deviations out, a few times 10⁻⁷ by the same approximation. The
+verdicts stand. What does not stand is reading a CollisionOver p-value at t = 14
+or 21 at face value. A correction, which compares the count with a variance of
+5/3 μ or 9/7 μ, has not been applied to anything on this page.
+
+```bash
+# one job of the calibration: TestU01's AES under key 1, tests 3, 4 and 9 to 12
+julia scripts/testu01/calibrate.jl --generator=aes --job=0 \
+      --tests=3:2,4:2,9:7,10:7,11:7,12:7 --out=<dir>
+```
+
+Each job writes the TestU01 log and `collisions.tsv`, which has one line per
+replication: the number of collisions, the p-value and the commit. The
+calibration ran 20 such AES jobs (keys 1 to 20) and three `Philox4x32-10` jobs
+(streams 4097 to 4099), 24 jobs at a time, in three hours.
 
 ## Long campaigns: running for days without a session
 
