@@ -20,6 +20,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   another matrix in the same directory. Its `--skip-calibration` starts a sweep
   with `--jobs` given without first running one job alone.
 
+- **A `substreams` suite.** `scripts/testu01/validate.jl --suite=substreams`
+  interleaves the substreams of one stream, in the same shapes as
+  `interleaved`, rather than separate streams: the other of the two
+  constructions in L'Ecuyer et al. (2021), and the one cuRAND uses — for a
+  counter-based generator one key and consecutive values of the counter's high
+  half. `campaign.jl` runs it once per shape, and `replay.jl` replays a suspect
+  on substreams of the same stream past those the run used. `--suite=all`
+  still means the three suites it meant, so existing results directories
+  resume unchanged. `scripts/run-campaign.sh` also takes `--generator`, and
+  records it with the rest of the matrix.
+
 - **A detached supervisor, now the fallback without linger.**
   `scripts/run-campaign.sh --supervisor=detached` starts the driver with
   `setsid nohup`, in a session of its own, records its pid in

@@ -144,8 +144,8 @@ end
 """
     log_shape(log) -> (streams, values) or nothing
 
-The interleaved suite's shape, from the `# S streams, V value(s) each` line
-validate.jl writes into the header of an interleaved run's log.
+The shape of an interleaved or substreams run, from the `# S streams, V
+value(s) each` line validate.jl writes into the header of its log.
 """
 function log_shape(log::AbstractString)
     for line in eachline(log)
@@ -175,9 +175,14 @@ end
     build_disjoint(suite, name, streams, values, skip)
 
 The generator the original run used, advanced past `skip` streams first, so
-that nothing it produces was seen by the run being replayed.
+that nothing it produces was seen by the run being replayed. For the
+substreams suite it is `skip` substreams of the same stream instead: the
+replay asks the same question of other substreams of that key, not of
+another key.
 """
 function build_disjoint(suite::String, name::String, streams::Int, values::Int, skip::Int)
+    suite == "substreams" &&
+        return TU01.Gen(_interleaved(substreams_of(make_rng(name), streams; skip = skip), values), name)
     g = stream_gen(name)
     for _ in 1:skip
         next_stream!(g)
@@ -237,17 +242,18 @@ function parse_args(args)
         isempty(opts.tests)     && (opts = merge(opts, (tests = first.(suspects(opts.log)),)))
         isempty(opts.out)       && (opts = merge(opts, (out = dirname(opts.log),)))
         opts.bits == 0          && (opts = merge(opts, (bits = log_bits(opts.log),)))
-        shape = opts.suite == "interleaved" ? log_shape(opts.log) : nothing
+        shape = shaped(opts.suite) ? log_shape(opts.log) : nothing
         if shape !== nothing
             opts.streams === nothing && (opts = merge(opts, (streams = shape[1],)))
             opts.values === nothing  && (opts = merge(opts, (values = shape[2],)))
         end
     end
     opts = merge(opts, (streams = something(opts.streams, 64), values = something(opts.values, 1)))
-    # The run drew from streams 1..streams (1 outside the interleaved suite), and
-    # the replay draws from skip+1 onwards: fewer skipped than used would repeat
-    # some of the run's output, which is what a replay exists to avoid.
-    used = opts.suite == "interleaved" ? opts.streams : 1
+    # The run drew from streams 1..streams (1 outside the interleaved suite;
+    # substreams 1..streams of stream 1 in the substreams suite), and the replay
+    # draws from skip+1 onwards: fewer skipped than used would repeat some of
+    # the run's output, which is what a replay exists to avoid.
+    used = shaped(opts.suite) ? opts.streams : 1
     opts = merge(opts, (skip = something(opts.skip, max(DEFAULT_SKIP, used)),))
 
     isempty(opts.battery) && error("--battery is required (or --log, which carries it)")
@@ -292,8 +298,10 @@ function main(args)
     println()
     println("replaying tests ", join(opts.tests, ", "), ", ", opts.reps, " time(s) each")
     opts.battery in BIT_BATTERIES && @printf("%.0f bits per replication, as the original run\n", opts.bits)
-    println("on streams ", opts.skip + 1, " and up, which the original run never drew from")
-    opts.suite == "interleaved" &&
+    println(opts.suite == "substreams" ? "on substreams " : "on streams ", opts.skip + 1,
+            opts.suite == "substreams" ? " and up of stream 1" : " and up",
+            ", which the original run never drew from")
+    shaped(opts.suite) &&
         println(opts.streams, " streams, ", opts.values, " value(s) each, as the original run")
     if opts.list
         println("\n--list given, nothing run.")
@@ -322,10 +330,11 @@ function main(args)
             println(io, "# ", provenance_line(PROV))
             println(io, "# started ", now())
             println(io, "# REPLAY of tests ", join(opts.tests, ", "), ", ", opts.reps, " time(s) each")
-            println(io, "# streams skipped before building the generator: ", opts.skip)
+            println(io, opts.suite == "substreams" ? "# substreams of stream 1 skipped" :
+                        "# streams skipped", " before building the generator: ", opts.skip)
             opts.battery in BIT_BATTERIES && @printf(io, "# bits = %.0f\n", opts.bits)
             isempty(opts.log) || println(io, "# source log: ", opts.log)
-            opts.suite == "interleaved" &&
+            shaped(opts.suite) &&
                 println(io, "# ", opts.streams, " streams, ", opts.values, " value(s) each, round-robin")
             flush(io)
             @elapsed redirect_stdout(io) do

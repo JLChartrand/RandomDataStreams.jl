@@ -14,10 +14,13 @@
 #
 # Options
 #   --battery=<name>                      default smallcrush; see BATTERIES
-#   --suite=single|interleaved|bits|all   default single
+#   --suite=single|interleaved|substreams|bits|all
+#                                         default single; `all` is single,
+#                                         interleaved and bits
 #   --generator=<name>|all                default all
-#   --streams=<n>                         streams for the interleaved suite (64)
-#   --values=<n>                          values per stream, interleaved (1)
+#   --streams=<n>                         streams of the interleaved and
+#                                         substreams suites (64)
+#   --values=<n>                          values per stream in turn (1)
 #   --bits=<n>                            bits for alphabit/rabbit (2^30)
 #   --out=<dir>                           default testu01-results
 #   --list                                print the plan and exit
@@ -81,6 +84,11 @@ const GENERATORS = GENERATOR_STREAMS
 # single       the U(0,1) output, what the batteries were designed for
 # interleaved  several streams round-robin, testing the streams against each
 #              other rather than each on its own (L'Ecuyer et al. 2021, Sec. 6)
+# substreams   the same, over the substreams of one stream instead: the other
+#              of the paper's two constructions. For a counter-based generator
+#              that is one key and consecutive values of the counter's high
+#              half, which is how cuRAND hands out its Philox subsequences; for
+#              MRG32k3a, substreams 2^76 apart, which are cuRAND's too
 # bits         the UInt32 integer path, which the Crush batteries never see:
 #              they examine the 30 most significant bits of the U(0,1) outputs
 
@@ -120,6 +128,31 @@ stream_gen(name::String) =
 make_rng(name::String) = next_stream!(stream_gen(name))
 
 """
+    substreams_of(rng, n; skip = 0) -> Vector
+
+`n` generators at the starts of substreams `skip + 1` to `skip + n` of the
+stream `rng` is at, counting the one it is in as the first; `rng` itself is
+left where it was.
+"""
+function substreams_of(rng, n::Int; skip::Int = 0)
+    r = deepcopy(rng)
+    for _ in 1:skip
+        next_substream!(r)
+    end
+    out = [deepcopy(r)]
+    for _ in 2:n
+        next_substream!(r)
+        push!(out, deepcopy(r))
+    end
+    return out
+end
+
+const SUITE_NAMES = ["single", "interleaved", "substreams", "bits"]
+
+"The suites whose output interleaves several streams, and so has a shape."
+shaped(suite::AbstractString) = suite in ("interleaved", "substreams")
+
+"""
     build(suite, name, opts) -> TU01.Gen
 
 The live TestU01 generator for one run. Free it with `TU01.free!`, or let
@@ -131,6 +164,8 @@ function build(suite::String, name::String, opts)
     elseif suite == "interleaved"
         g = stream_gen(name)
         return TU01.Gen(_interleaved([next_stream!(g) for _ in 1:opts.streams], opts.values), name)
+    elseif suite == "substreams"
+        return TU01.Gen(_interleaved(substreams_of(make_rng(name), opts.streams), opts.values), name)
     elseif suite == "bits"
         return TU01.bitgen(_bit_stream(make_rng(name)), name)
     end
@@ -218,7 +253,12 @@ function plan(opts)
     for n in names
         any(p -> first(p) == n, GENERATORS) || error("unknown generator: $n")
     end
+    # `all` predates the substreams suite and still means the three suites
+    # every campaign before it ran; the fourth is asked for by name.
     suites = opts.suite == "all" ? ["single", "interleaved", "bits"] : [opts.suite]
+    for s in suites
+        s in SUITE_NAMES || error("unknown suite: $s (one of $(join(SUITE_NAMES, ", ")), or all)")
+    end
     return [(n, s) for s in suites for n in names]
 end
 
@@ -281,8 +321,10 @@ function main(args)
                 println(io, "# Julia ", VERSION, ", ", Sys.CPU_NAME, ", ", Sys.MACHINE)
                 println(io, "# ", provenance_line(PROV))
                 println(io, "# started ", now())
-                suite == "interleaved" &&
+                shaped(suite) &&
                     println(io, "# ", opts.streams, " streams, ", opts.values, " value(s) each, round-robin")
+                suite == "substreams" &&
+                    println(io, "# the streams are substreams 1 to ", opts.streams, " of stream 1")
                 # A replay of a bit-level battery has to consume the same number
                 # of bits, so the run records it where replay.jl can read it.
                 opts.battery in BIT_BATTERIES &&
@@ -321,8 +363,8 @@ function main(args)
             println(io, join((now(), opts.battery, suite, name, round(elapsed, digits = 1),
                               log, VERSION, Sys.CPU_NAME, PROV.commit, PROV.dirty,
                               PROV.version,
-                              suite == "interleaved" ? opts.streams : "",
-                              suite == "interleaved" ? opts.values : "",
+                              shaped(suite) ? opts.streams : "",
+                              shaped(suite) ? opts.values : "",
                               opts.battery in BIT_BATTERIES ? @sprintf("%.0f", opts.bits) : "",
                               length(stats), length(bad), length(failed), extreme), '\t'))
         end
