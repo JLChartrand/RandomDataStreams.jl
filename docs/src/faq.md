@@ -127,6 +127,44 @@ gives an identically zero output — so a new family whose bijection is weak for
 structured keys must override `stream_key` with a schedule that hashes the
 seed. See [Implementation Notes](implementation.md).
 
+## Can I reproduce cuRAND's Philox and MRG32k3a streams?
+
+Yes, word for word. cuRAND's `Philox4_32_10` is this package's `PhiloxRNG`: the
+seed is the key, its low 32 bits first, and cuRAND's subsequence is the
+package's substream — the high half of the counter — with the offset counting
+words into it:
+
+```julia
+rng = PhiloxRNG((s % UInt32, (s >> 32) % UInt32))   # cuRAND's seed s
+for _ in 1:k
+    next_substream!(rng)                             # curand_init(s, k, 0)
+end
+rand(rng, UInt32)                                    # the first curand(&state)
+```
+
+The same holds for the host API, whose default ordering for Philox takes four
+words from each of 65,536 subsequences in turn. The test suite checks words that
+cuRAND generated itself, through both APIs, at subsequences up to `2^64 − 1`.
+
+What carries over is the 32-bit words, not what is built on them. cuRAND's
+`curand_uniform` returns `x·2^-32 + 2^-33` in single precision, which is
+`1.0f0` for the largest word: its floats lie in `(0, 1]`, this package's in
+`(0, 1)`. Its normals are Box-Muller, this package's inversion. A pipeline that
+uses cuRAND's distributions therefore does not reproduce; one built on its words
+does, and a kernel of your own reaches any of them through
+[`philox4x32_10`](@ref) and [`philox4x32_counter`](@ref).
+
+cuRAND's `MRG32k3a` is this package's `MRG32k3a` too. Seed 0 is L'Ecuyer's
+published state, the one `MRG32k3a()` starts from; another seed sets each
+component to `12345·x mod m`, `x` being the seed's low half XOR `0x55555555` or
+its high half XOR `0xAAAAAAAA`, as `curand_init` does. Its subsequence `k` is the
+package's substream `k`, `k·2^76` steps in — `next_substream!` from `MRG32k3a()`
+for seed 0 — and the host API's default ordering takes output `n` from step
+`n ÷ 81920` of subsequence `n mod 81920`. Here what carries over is the
+combination `z` in `[1, m1]`: cuRAND's doubles are `z/m1`, which is `1.0` for
+`z = m1`, the package's `z/(m1 + 1)`, and its 32-bit integers are `z` scaled to
+`2^32 − 1`, not the package's.
+
 ## Can I reproduce a NumPy pipeline?
 
 Partly. `PCG64` here produces exactly the same raw 64-bit outputs as
@@ -138,9 +176,9 @@ reproduce a NumPy stream if you carry the state across, not if you carry only
 the seed.
 
 The distributions differ too. `rand(rng)` and `numpy`'s `random()` consume the
-same bits but not necessarily in the same way, and `randn` uses a different
-algorithm from NumPy's ziggurat. Only the raw generator output is guaranteed
-to agree.
+same bits but not necessarily in the same way, and `randn` draws by inversion
+where NumPy uses a Ziggurat. Only the raw generator output is guaranteed to
+agree.
 
 ## Why can't I choose PCG's increment to get more streams?
 
@@ -160,7 +198,17 @@ For the counter-based generators, yes. With CUDA.jl loaded, `rand!` fills a
 `CuArray{Float64}`, `CuArray{Float32}` or `CuArray{Float16}` on the device, bit
 for bit what the same call gives on the CPU from the same position, and leaves
 the generator object — which stays on the host — where the CPU fill would.
-`randn!` on a `CuArray` (Philox4x32 only) continues the same stream but uses
-Box-Muller, so its values differ from the CPU's `randn`. The recurrence-based
-generators assign and navigate streams on the host only. See
+`randn!` and `randexp!` do the same for normal and exponential variates, which
+every generator draws by inversion: the GPU's values are the CPU's. The
+recurrence-based generators assign and navigate streams on the host only. See
 [Streams & Substreams](streams.md).
+
+## Why does `randn` use inversion rather than the Ziggurat?
+
+Because the Ziggurat breaks what this package's streams are for. It takes a
+variable number of uniforms per normal, and builds a normal from different bits
+of one word, so reflecting a uniform does not negate a normal, two systems that
+share uniforms need not share normals, and a quasi-Monte Carlo point does not
+map to one normal per coordinate. Inversion, one uniform per normal through
+Φ⁻¹, has none of these problems, at a cost in speed. The comparison is tabulated
+in [Normal variates and variance reduction](streams.md#Normal-variates-and-variance-reduction).

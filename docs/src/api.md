@@ -46,7 +46,7 @@ value shaped like the state *is* the state.
 | `advance_state!(rng, e, c) -> rng` | move by `2^e + c` draws; negative moves backwards |
 | `get_state(rng)` / `set_state!(rng, s) -> rng` | save and restore the position only |
 | `copy(rng)`, `show(io, rng)` | independent copy; one-line summary, or the three anchors when displayed at the REPL |
-| the full `Random` API | `rand`, `rand!`, `randn`, `shuffle`, ranges, every integer and float type |
+| the full `Random` API | `rand`, `rand!`, `randn`, `randexp`, `shuffle`, ranges, every integer and float type; `randn` and `randexp` by inversion |
 
 `get_state` returns a family-specific representation. Treat it as opaque and
 only ever hand it back to `set_state!`.

@@ -449,6 +449,48 @@ MRG63k3a needs one more guard. For the twelve largest values of `k`,
 in L'Ecuyer's C code as well. Those draws are capped at `prevfloat(1.0)`, the
 only place where the package departs from the reference values.
 
+## Normal and exponential variates
+
+`randn(rng)` is Φ⁻¹ of one uniform and `randexp(rng)` is `-log(1 - u)` of one;
+[Streams & Substreams](streams.md#Normal-variates-and-variance-reduction)
+explains why. The two maps live in `src/normal.jl` and are built to give the
+same bits on every IEEE 754 device.
+
+Φ⁻¹ is Wichura's AS 241, PPND16 (*Applied Statistics* 37, 1988): rational
+functions of degree 7 in three regions. The central one, ``|u - 1/2| \le 0.425``,
+covers 85% of the draws and needs no logarithm; the two tails take
+``r = \sqrt{-\log \min(u, 1 - u)}``, split at ``r = 5``. Against 256-bit MPFR its
+relative error stayed below ``5 \times 10^{-16}``, 4 ulp at worst over 20 000
+points spread across the three regions. The logarithm is fdlibm's `e_log.c`,
+within 0.81 ulp in the same check.
+
+Both use only operations IEEE 754 rounds correctly — `+`, `−`, `×`, `÷`, `sqrt`,
+`fma` — and integer operations on the bits. No libm: Julia's `log` and CUDA's
+libdevice `log` differ in the last bits. And no product is ever an operand of a
+sum, because the GPU compiler contracts `a * b + c` into an fma where the CPU's
+does not: before every such sum was written as the fma itself, one exponential
+in 200 000 came out an ulp apart on the device. The test suite now compares the
+maps on the device and on the host over the extremes of the uniform grid, both
+tails, the boundaries between the regions and a million further points, and the
+device fills against the CPU fills for the four counter-based families.
+
+The antithetic identity `norminv(1 - u) == -norminv(u)` is exact on the word
+generators' grid of odd multiples of ``2^{-53}``: `1 - u` and `u - 1/2` are
+exact there, and the rational function is computed from ``|u - 1/2|`` and its
+sign. A `Float32` or `Float16` normal from `randn` is the `Float64` one
+rounded, as in the standard library.
+
+`randn32` and `norminv(::Float32)` are the same construction in single
+precision: AS 241's PPND7, polynomials of degree 3 over 2 in the same three
+regions, and FreeBSD's `e_logf.c`, the `Float32` conversion of fdlibm's
+logarithm, with the same fma rule. Both were checked against the `Float64`
+versions over every `Float32` they accept: the logarithm within 0.854 ulp over
+all positive finite `Float32`, Φ⁻¹ within 5.4 `Float32` ulps over all of
+``(0, 1)`` — the worst near ``1.5 \times 10^{-11}``, in a tail no uniform of the
+``2^{-24}`` grid reaches — and the antithetic identity exact, and the map
+monotone, over all ``2^{23}`` points of that grid. The device gives the same
+bits over all of them.
+
 ## Testing strategy
 
 Reference sequences were captured from the reference implementations
@@ -574,3 +616,45 @@ mid-block because the caller has been mixing widths.
 
 Every generator draws with zero allocations, in both paths, as do `short_jump!`
 and `long_jump!`.
+
+### GPU fills
+
+Reproduce with `julia -O3 scripts/benchmarks/gpu_fills.jl`, which states its
+method in its header. Figures below are one run on an NVIDIA RTX A1000 (CUDA.jl
+6.4.2), a card power-limited at 50 W whose rates move by 10 to 20% from one run
+to the next: fills of ``2^{26}`` elements, billions of elements per second.
+
+| Generator | `rand!` `Float64` | `rand!` `Float32` | `randn!` (any type) | `randexp!` | `randn32!` |
+|---|---|---|---|---|---|
+| `Philox4x32-10` | 19.3 | 41.3 | 0.60 | 1.45 | 14.9 |
+| `Philox4x64-10` | 11.5 | 27.7 | 0.60 | 1.45 | 12.5 |
+| `Threefry4x32-20` | 7.1 | 14.2 | 0.60 | 1.44 | 10.6 |
+| `Threefry4x64-20` | 5.5 | 6.5 | 0.60 | 1.32 | 5.9 |
+
+For scale, on the same card: writing the array with `fill!` runs at 23.5
+(`Float64`) and 47.0 (`Float32`) billion elements a second, the memory bound;
+CUDA.jl's default `rand!` (cuRAND) at 20.7 and 45.1, and its `randn!`
+(Box-Muller) at 1.42 and 41.2; this package's `randn_boxmuller!` at 1.44 and
+24.6.
+
+What the table says. A uniform fill from Philox4x32 is at the memory bound, as
+cuRAND's is; the other three ciphers are bound by their own arithmetic — 64-bit
+multiplications and twenty rounds cost a GPU more than a CPU. Every `randn!` is
+at 0.6 whatever the generator, and whatever the output type: it is the `Float64`
+inversion, on a card that computes `Float64` at a small fraction of its
+`Float32` rate, and that limit is the card's — cuRAND's `Float64` Box-Muller
+meets it at 1.4. `randn32!` keeps inversion in `Float32` throughout and runs
+twenty to twenty-five times faster.
+
+A large uniform or `randn32!` fill runs one thread per block of the generator,
+computing each block once and writing every draw whose words lie in it; one
+thread per element, as before, computed the block once per word, four times for
+a `Float32` fill. That halved the `Float32` rate of Philox4x32, and cost the
+64-bit ciphers a factor of three to four in `Float32`. Below ``2^{16}`` blocks, and for the
+`Float64` inversions at every size, one thread per element is kept: it finishes
+small fills sooner, and the inversion, not the cipher, is then the work. Either
+kernel gives the same values; the test suite runs both against the CPU.
+
+A small fill is launch-bound: about 3 µs for a thousand uniforms from a process
+pinned to a performance core, 4 µs from an efficiency core — host time, which a
+GPU does not shorten.

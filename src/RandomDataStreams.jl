@@ -40,6 +40,9 @@ include("threefry/threefry.jl")
 ###standard Random.seed! interface for every generator
 include("seeding.jl")
 
+###normal and exponential variates by inversion, the same bits on CPU and GPU
+include("normal.jl")
+
 export Xoroshiro128p, Xoroshiro128ss, Xoroshiro128pp,
        Xoshiro256p, Xoshiro256ss, Xoshiro256pp,
        Xoshiro512p, Xoshiro512ss, Xoshiro512pp,
@@ -55,21 +58,32 @@ export PCG64, PCG64DXSM, PCG64Gen, PCG64DXSMGen
 export CBRNG, CBGen
 export PhiloxRNG, PhiloxGen
 export Philox4x64RNG, Philox4x64Gen
-export philox4x32_10, philox4x32_counter, open01
+export philox4x32_10, philox4x32_counter, open01, norminv, randn32, randn32!
 export Threefry4x64RNG, Threefry4x64Gen, Threefry4x32RNG, Threefry4x32Gen
 
-# GPU-only normal-variate algorithms, compared against `randn!`'s Box-Muller
-# (branch philox-gpu-randn-test). Declared here, as empty generic functions,
-# so the package always exports a name to dispatch on; the CUDA extension
-# (ext/RandomDataStreamsCUDAExt.jl) adds the actual methods when CUDA.jl is
-# loaded alongside this package, and its docstrings are the ones that apply.
+# GPU-only normal-variate algorithms, kept beside inversion -- which `randn!`
+# uses on the CPU and on the GPU alike -- for comparison. Declared here, as
+# empty generic functions, so the package always exports a name to dispatch on;
+# the CUDA extension (ext/RandomDataStreamsCUDAExt.jl) adds the actual methods
+# when CUDA.jl is loaded alongside this package, and its docstrings are the
+# ones that apply.
+"""
+    randn_boxmuller!(rng, A) -> A
+
+Standard-normal fill via Box-Muller on the GPU, two uniforms of one Philox4x32
+block to two normals. Faster than `randn!` and branch-free, but it does not
+carry antithetic variates or randomized quasi-Monte Carlo through, and it
+matches no CPU output. Only defined for `PhiloxRNG`/`CuArray`, by the CUDA
+extension -- see its docstring.
+"""
+function randn_boxmuller! end
+
 """
     randn_inversion!(rng, A) -> A
 
-Standard-normal fill via inversion (`Phi^-1` of a Philox-generated uniform,
-one input to one output). Only defined for `PhiloxRNG`/`CuArray`, by the CUDA
-extension -- see its docstring for the full contract and, more importantly,
-why this exists alongside `randn!`'s Box-Muller.
+Deprecated: `randn!` draws by inversion now, on the CPU and on the GPU, with the
+same values on both. Forwards to it, on a `CuArray`, when the CUDA extension is
+loaded.
 """
 function randn_inversion! end
 
@@ -77,11 +91,11 @@ function randn_inversion! end
     randn_polar!(rng, A) -> A
 
 Standard-normal fill via Marsaglia's polar method (accept-reject), kept only
-for comparison against [`randn_inversion!`](@ref) and `randn!`'s Box-Muller.
+for comparison against inversion (`randn!`) and [`randn_boxmuller!`](@ref).
 Only defined for `PhiloxRNG`/`CuArray{Float64}`, by the CUDA extension -- see
 its docstring.
 """
 function randn_polar! end
 
-export randn_inversion!, randn_polar!
+export randn_boxmuller!, randn_inversion!, randn_polar!
 end # module

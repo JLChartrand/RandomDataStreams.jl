@@ -1,4 +1,4 @@
-# Minimal CSV writer, shared by throughput.jl and gpu_throughput.jl. A real
+# Minimal CSV writer, shared by throughput.jl, gpu_throughput.jl and gpu_fills.jl. A real
 # CSV.jl dependency is more machinery than a handful of numeric columns needs,
 # and none of the values written here (generator names, metric names, numbers)
 # can contain a comma or a quote, so no escaping is needed either.

@@ -288,7 +288,7 @@ Random.rand!(rng::CBRNG, A::Array{Float64},
 # The k-th floating-point draw from a given position, as a pure function of the
 # key, the block counter and k: the same words, in the same order, through the
 # same `open01` as the stream object. A GPU kernel fills element k of an array
-# this way, one thread per element, which is what makes a device fill agree with
+# this way -- by block, through `_fill_block!` below -- which is what makes a device fill agree with
 # the CPU bit for bit from any starting position. The test suite checks these
 # functions against the stream object on the CPU, so the agreement does not rest
 # on having a GPU to test with.
@@ -373,6 +373,63 @@ end
 @inline _draw_at(::Type{T}, ::Type{G}, key, hi::UInt64, lo::UInt64, w0::Int, k::Int, ::Val) where
         {T,G<:CBRNG} =
     _draw_at(T, G, key, hi, lo, w0, k)
+
+# Draws addressed by block -------------------------------------------------------
+#
+# `_draw_at` computes a whole block for every draw, and a block holds four
+# words: a Float32 fill computed each block four times, and lost half the
+# device's rate to it. `_fill_block!` is the same fill organised by block: it
+# computes block `b` once and writes every draw whose first word lies in it --
+# up to N draws of one word, N/2 of two -- with the values `_draw_at` gives,
+# which the test suite checks on the CPU. A kernel runs it with one thread per
+# block. The one draw that can straddle into the next block, the last pair of
+# a 32-bit family started on an odd word, takes that block's first word, and
+# only when `straddle` says it can happen.
+
+# The value of a draw from its words: the conversions `_draw_at` applies.
+@inline _draw_from(::Type{Float64}, ::Type{UInt32}, wlo::UInt32, whi::UInt32) =
+    open01((UInt64(whi) << 32) | UInt64(wlo))
+@inline _draw_from(::Type{Float64}, ::Type{UInt64}, w::UInt64) = open01(w)
+@inline _draw_from(::Type{T}, ::Type{W}, w::W) where {T<:Union{Float16,Float32},W} = _u01(T, _word32(w))
+
+"""
+    _blocks_spanned(U, W, N, w0, n) -> Int
+
+How many blocks a fill of `n` draws of type `U` touches, starting at word `w0`
+of its first block: the threads a block-per-thread kernel launches.
+"""
+@inline _blocks_spanned(::Type{U}, ::Type{W}, N::Int, w0::Int, n::Int) where {U,W} =
+    n == 0 ? 0 : fld(w0 + _words_per_draw(U, W) * n - 1, N) + 1
+
+"""
+    _fill_block!(A, f, U, G, key, hi, lo, w0, n, b, straddle) -> nothing
+
+Write `A[k + 1] = f(_draw_at(U, G, key, hi, lo, w0, k))`, converted to the
+element type of `A`, for every `k < n` whose first word lies in block `b`
+(0-based) past the block `(hi, lo)`, computing that block once. Over
+`b = 0 : _blocks_spanned(...) - 1` it fills `A` with exactly the values the
+position-addressed draws give.
+"""
+@inline function _fill_block!(A, f::F, ::Type{U}, ::Type{G}, key, hi::UInt64, lo::UInt64,
+                              w0::Int, n::Int, b::Int, ::Val{S}) where {F,U,B,W,N,K,G<:CBRNG{B,W,N,K},S}
+    wpd = _words_per_draw(U, W)
+    # draw k starts at word w0 + wpd k, counted from block 0's first word
+    klo = max(0, cld(N * b - w0, wpd))
+    khi = min(n - 1, fld(N * b + N - 1 - w0, wpd))
+    klo > khi && return nothing
+    blk = _block_at(G, key, hi, lo, UInt64(b))
+    for k in klo:khi
+        j = w0 + wpd * k - N * b                       # its first word's place in the block
+        u = if U === Float64 && W === UInt32
+            whi = S && j + 1 == N ? _block_at(G, key, hi, lo, UInt64(b + 1))[1] : _pick(blk, j + 1)
+            _draw_from(Float64, UInt32, _pick(blk, j), whi)
+        else
+            _draw_from(U, W, _pick(blk, j))
+        end
+        @inbounds A[k + 1] = convert(eltype(A), f(u))
+    end
+    return nothing
+end
 
 """
     _draw_position(rng::CBRNG) -> (hi, lo, w0)

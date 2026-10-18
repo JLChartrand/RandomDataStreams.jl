@@ -6,7 +6,72 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`randn` and `randexp` draw by inversion, on every generator.** `randn(rng)`
+  is now `norminv(rand(rng, Float64))` and `randexp(rng)` is
+  `-log(1 - rand(rng, Float64))`, in place of the standard library's Ziggurat:
+  one uniform per variate, through a monotone map. Antithetic variates, common
+  random numbers and randomized quasi-Monte Carlo now carry through from the
+  uniforms to the variates -- on the word generators' grid, reflecting a uniform
+  negates its normal exactly. **Every normal and exponential sequence changes**;
+  the uniforms do not. A normal costs more: about 4.5 ns over its uniform on
+  Xoshiro256++, against 1.2 ns for the Ziggurat. The manual's "Normal variates
+  and variance reduction" tabulates the comparison.
+
+- **On the GPU, `randn!` and `randexp!` are the CPU's, bit for bit**, for the
+  four counter-based generators and `Float64`, `Float32` and `Float16`, from
+  any position, mid-block included. They were Box-Muller, Philox4x32 only and
+  block-aligned, matching nothing on the CPU. Both maps are computed with
+  correctly rounded operations only -- an fdlibm logarithm instead of libm's or
+  libdevice's, and every product feeding a sum written as an fma, since the GPU
+  compiler fuses what the CPU's does not. A `Float32` normal is computed in
+  `Float64`, as on the CPU, which a consumer GPU runs slowly: about 0.6 billion
+  a second on an RTX A1000.
+
+- **GPU fills compute each block of the generator once.** A large `rand!` or
+  `randn32!` into a `CuArray` runs one thread per block of the counter-based
+  generator, writing every draw whose words lie in it, where one thread per
+  element recomputed the whole block for each word. On an RTX A1000, `rand!`
+  in `Float32` from Philox4x32 doubles to the memory bound (41 billion a
+  second, cuRAND's 45), the 64-bit ciphers run three to four times faster in
+  `Float32` (Threefry4x64 three times in `Float64` too, Philox4x64 1.4 times),
+  and `randn32!` 1.3 to 3 times. Fills under 2^16 blocks, and `randn!`/`randexp!`,
+  whose `Float64` inversion is the work, keep one thread per element. The
+  values do not change. `scripts/benchmarks/gpu_fills.jl` measures every fill.
+
+- **Faster `Float32` and `Float16` normal fills on the CPU.** `randn!` and
+  `randexp!` into a narrower array went through the standard library's
+  one-draw-at-a-time fallback, which cost a counter-based generator twice its
+  `Float64` rate. A counter-based generator now fills block by block, through
+  the function its GPU kernel uses, and the others draw eight uniforms onto the
+  stack at a time. On one P-core of an Intel Core Ultra 9 285, `randn!` into a
+  `Float32` array went from 14.7 to 10.5 ns a value with Philox4x32, 21.4 to
+  11.4 with Threefry4x64, 12.4 to 8.5 with MRG32k3a, and 5.3 to 4.7 with
+  Xoshiro256++, and `randexp!` from 6.9 to 2.9 with Xoshiro256++; still without
+  allocation, and with the same values. `randn32!`, whose uniforms already fit
+  the array, keeps `rand!` and Φ⁻¹ in place, except where the uniforms are dear
+  enough for one pass to win: Threefry4x64 11.8 to 9.4 ns, Philox4x64 8.4 to
+  7.2, MRG32k3a 8.9 to 8.4.
+
+- **Box-Muller moves to `randn_boxmuller!`** (Philox4x32, `Float64` and
+  `Float32`, as before), and **`randn_inversion!` is deprecated**: it forwards to
+  `randn!`, which is inversion now.
+
 ### Added
+
+- **`randn32` and `randn32!`: single-precision normals by inversion**, the
+  `Float32` Φ⁻¹ (AS 241's PPND7) of `rand(rng, Float32)`, in `Float32`
+  arithmetic throughout, on every generator and, through the CUDA extension, on
+  a `CuArray{Float32}` with the CPU's values bit for bit. About eighteen times
+  `randn!`'s `Float32` rate on an RTX A1000 (about 11 billion a second with
+  Philox4x32), for tails that stop at ±5.29 instead of ±8.21. `norminv` on a
+  `Float32` is this single-precision map.
+
+- **`norminv(u)`**, the standard normal quantile function `randn` uses
+  (Wichura's AS 241, relative error below 5e-16), exported so that the points of
+  a randomized quasi-Monte Carlo rule, or a kernel's own uniforms, map the same
+  way, with the same bits on a GPU.
 
 - **Campaigns over several interleaved shapes.** `scripts/testu01/campaign.jl`
   takes `--shapes=<streams>x<values>[,...]` and runs the interleaved suite once
@@ -94,6 +159,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   directory that does.
 
 ### Validation
+
+- **`PhiloxRNG` reproduces cuRAND's `Philox4_32_10`**, word for word: cuRAND's
+  seed is the key, low word first, and its subsequence is the package's
+  substream. Checked against cuRAND 10.4 (CUDA 13.4) through the host API, on
+  4 194 304 words for four seeds, and through the device API's
+  `curand_init(seed, subsequence, offset)`, on 1 310 720 words with
+  subsequences up to `2^64 - 1` and offsets mid-block; the test suite keeps
+  words cuRAND generated. The FAQ says what carries over and what does not:
+  the words, not cuRAND's floats, which include 1.0, nor its Box-Muller
+  normals.
+
+- **`MRG32k3a` reproduces cuRAND's `MRG32k3a`**, on the combination `z` both
+  then scale: seed 0 is the published state `MRG32k3a()` starts from, other
+  seeds go through `curand_init`'s map, and cuRAND's subsequence `k` is the
+  package's substream `k`, `k·2^76` steps in. Checked against cuRAND 10.4 on
+  4 × 2 621 440 values of the host API and 524 288 of the device API, with
+  subsequences up to `2^51 − 1`, the end of the range cuRAND declares valid,
+  and offsets up to 10⁶; the test suite keeps values cuRAND generated.
 
 - **BigCrush over the whole matrix**, at v0.3.0: the seventeen generators,
   BigCrush on the `single` and `interleaved` suites, Alphabit and Rabbit on

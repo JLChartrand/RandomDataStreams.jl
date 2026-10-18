@@ -9,8 +9,11 @@
 #
 # Contenders
 #
-#   philox_boxmuller  this package:  randn!(::PhiloxRNG, ::CuArray)
-#   philox_inversion  this package:  randn_inversion!(::PhiloxRNG, ::CuArray)
+#   philox_inversion  this package:  randn!(::PhiloxRNG, ::CuArray) -- inversion,
+#                                    the CPU's values bit for bit
+#   philox_randn32    this package:  randn32!(::PhiloxRNG, ::CuArray{Float32}) --
+#                                    inversion in single precision; Float32 only
+#   philox_boxmuller  this package:  randn_boxmuller!(::PhiloxRNG, ::CuArray)
 #   curand            CUDA.jl:       Random.randn!(::CuArray) -- with no RNG
 #                                    argument this is the cuRAND library
 #                                    (CUDA.jl 6.x), i.e. what `CUDA.randn(T, n)`
@@ -71,7 +74,7 @@ include(joinpath(@__DIR__, "..", "provenance.jl"))
 include(joinpath(@__DIR__, "csv_util.jl"))
 
 const SEED = 20260920
-const CONTENDERS = ("philox_boxmuller", "philox_inversion", "curand", "gpuarrays", "native")
+const CONTENDERS = ("philox_inversion", "philox_randn32", "philox_boxmuller", "curand", "gpuarrays", "native")
 const ZSCORE_WARN = 5.0
 
 const CSV_HEADER = ["contender", "eltype", "sumexp_gdraws_per_s", "fill_gdraws_per_s",
@@ -79,14 +82,18 @@ const CSV_HEADER = ["contender", "eltype", "sumexp_gdraws_per_s", "fill_gdraws_p
                     "total_draws", "chunk", "reps", "mean", "z",
                     "commit", "dirty", "cuda_jl", "gpu"]
 
-"Returns `gen!(buf)`: fill a device buffer with N(0,1) from the named contender."
-function make_filler(name::AbstractString)
-    if name == "philox_boxmuller"
+"Returns `gen!(buf)`: fill a device buffer of `T` with N(0,1) from the named contender."
+function make_filler(name::AbstractString, ::Type{T}) where {T}
+    if name == "philox_inversion"
         rng = PhiloxRNG((UInt32(1), UInt32(2)))
         return buf -> randn!(rng, buf)
-    elseif name == "philox_inversion"
+    elseif name == "philox_randn32"
+        T === Float32 || error("philox_randn32 is randn32!, which fills Float32 only")
         rng = PhiloxRNG((UInt32(1), UInt32(2)))
-        return buf -> randn_inversion!(rng, buf)
+        return buf -> randn32!(rng, buf)
+    elseif name == "philox_boxmuller"
+        rng = PhiloxRNG((UInt32(1), UInt32(2)))
+        return buf -> randn_boxmuller!(rng, buf)
     elseif name == "curand"
         CUDA.seed!(SEED)
         return buf -> randn!(buf)
@@ -233,7 +240,7 @@ function run_case(name::String, T::Type, csv_path::String, err_path::String)
     total = max(2^total_log2, chunk)
     println("total = $total draws per repetition, chunk = $chunk ($(Base.format_bytes(chunk * sizeof(T)))), reps = $reps\n")
 
-    gen! = make_filler(name)
+    gen! = make_filler(name, T)
     buf = CUDA.zeros(T, chunk)
     r = measure(gen!, buf, total, chunk, reps; sync = CUDA.synchronize)
 

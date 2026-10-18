@@ -143,8 +143,8 @@ rng = next_stream!(MRG32k3aGen())     # any RandomDataStreams generator works he
 
 rand(rng, 5)                          # Vector{Float64}, 5 draws
 A = rand(rng, Float64, 2, 3)          # 2x3 matrix
-z = randn(rng)                        # standard normal
-e = randexp(rng)                      # exponential
+z = randn(rng)                        # standard normal, by inversion
+e = randexp(rng)                      # exponential, by inversion
 v = shuffle(rng, collect(1:8))        # shuffled copy
 p = randperm(rng, 6)                  # random permutation
 buf = Vector{Float64}(undef, 3)
