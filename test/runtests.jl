@@ -1508,6 +1508,94 @@ statewords(::Type{RandomDataStreams.LinRNG{N,S}}) where {N,S} = N
     end
 
 
+    @testset "PhiloxRNG reproduces cuRAND's Philox4_32_10" begin
+        # Words cuRAND generated itself -- cuRAND 10.4 from CUDA 13.4, on an RTX
+        # A1000 -- not words computed here. cuRAND's seed is the key, low word
+        # first; its subsequence -- `curand_init(seed, subsequence, offset)` in
+        # the device API, sequence (n ÷ 4) mod 65536 of output n in the host
+        # API's default ordering, which for Philox is the legacy one and fixed
+        # across releases -- is the package's substream, the high half of the
+        # counter, and the offset counts words into it.
+        key = (UInt32(1234), UInt32(0))                       # seed 1234
+        host = ((0, 0, UInt32[0x2090b348, 0xda7cf0ab, 0x4401906f, 0xcbca470e]),
+                (1, 0, UInt32[0xd115a128, 0x52fc7c75, 0xc7f33f17, 0x0f1539db]),
+                (65535, 0, UInt32[0xc50798ff, 0x2de1f89b, 0x35542ec6, 0x8e29d01a]),
+                (0, 1, UInt32[0x9eeede35, 0x1cbe137c, 0xfa277093, 0x147edd50]))
+        for (sub, blk, words) in host                          # (subsequence, block, words)
+            rng = PhiloxRNG(key)
+            for _ in 1:sub
+                next_substream!(rng)
+            end
+            for _ in 1:4blk
+                rand(rng, UInt32)
+            end
+            @test [rand(rng, UInt32) for _ in 1:4] == words
+        end
+        # the device API, at a subsequence and an offset no stream object
+        # reaches by stepping: through the stateless primitives
+        device = ((0x0123456789abcdef, UInt64(1) << 40, 5,
+                   UInt32[0xaf399468, 0xfd62775b, 0x88ab1f0a, 0x56108d4d,
+                          0x515bc65c, 0xab81e79f, 0x6b521bbb, 0xdf85af67]),
+                  (typemax(UInt64), typemax(UInt64), 0,
+                   UInt32[0x3d3be307, 0x716983d6, 0x70094bed, 0x36c3cf91,
+                          0x933684c8, 0x53e5a0af, 0xd2fd021a, 0xb4c93c70]))
+        for (seed, sub, offset, words) in device
+            k = (seed % UInt32, (seed >> 32) % UInt32)
+            @test [philox4x32_10(philox4x32_counter(sub, UInt64(g ÷ 4)), k)[g % 4 + 1]
+                   for g in offset:offset + 7] == words
+        end
+    end
+
+
+    @testset "MRG32k3a reproduces cuRAND's MRG32k3a" begin
+        # Values cuRAND generated itself -- cuRAND 10.4 from CUDA 13.4, on an RTX
+        # A1000 -- as the combination z in [1, m1] that both libraries then
+        # scale: cuRAND by 1/m1, so that 1.0 can come out, the package by
+        # 1/(m1 + 1). Seed 0 is L'Ecuyer's published state, MRG32k3a()'s; any
+        # other seed goes through curand_init's map, below. cuRAND's subsequence
+        # k is the package's substream k, k * 2^76 steps in, and the host API's
+        # default ordering takes output n from step n ÷ 81920 of subsequence
+        # n mod 81920.
+        P = RandomDataStreams.PrivateMRGFuncs
+        z(g) = round(Int64, rand(g) * (P.m1 + 1))
+        function curand_state(seed::UInt64)
+            seed == 0 && return fill(12345, 6)
+            x1 = Int((seed % UInt32) ⊻ 0x55555555)
+            x2 = Int(((seed >> 32) % UInt32) ⊻ 0xaaaaaaaa)
+            return [x1 * 12345 % P.m1, x2 * 12345 % P.m1, x1 * 12345 % P.m1,
+                    x2 * 12345 % P.m2, x1 * 12345 % P.m2, x2 * 12345 % P.m2]
+        end
+        @test curand_state(UInt64(0)) == P.DEFAULT_SEED
+        # the host API, seed 1234: (subsequence, step, z)
+        for (sub, step, want) in ((0, 0, 3379073356), (1, 0, 653317619), (81919, 0, 928654624),
+                                  (0, 1, 2521875978), (5, 1, 2849003540))
+            g = MRG32k3a(curand_state(UInt64(1234)))
+            for _ in 1:sub
+                next_substream!(g)
+            end
+            for _ in 1:step
+                rand(g)
+            end
+            @test z(g) == want
+        end
+        # the device API, curand_init(seed, subsequence, offset), at
+        # subsequences no stream object reaches by stepping: by matrix powers
+        device = ((UInt64(0), 0, 0, [545508589, 1368065410, 1327943761, 3546985096, 951893194, 2290915636]),
+                  (0x0123456789abcdef, Int64(1) << 40, 5,
+                   [3778991753, 1268150770, 1171613253, 1698644673, 3187994983, 1733540227]),
+                  (typemax(UInt64), (Int64(1) << 51) - 1, 1_000_003,
+                   [247363440, 1587449149, 2546051061, 4243750324, 4174089990, 247032779]))
+        for (seed, sub, offset, want) in device
+            s = curand_state(seed)
+            s1 = P.MatVecModM(P.MatPowModM(P.A1p76, sub, P.m1), s[1:3], P.m1)
+            s2 = P.MatVecModM(P.MatPowModM(P.A2p76, sub, P.m2), s[4:6], P.m2)
+            g = MRG32k3a(vcat(s1, s2))
+            advance_state!(g, Int64(0), Int64(offset))
+            @test [z(g) for _ in 1:6] == want
+        end
+    end
+
+
     @testset "stateless addressing matches the stream object" begin
         # A counter-based draw must be recomputable from (key, substream,
         # index) alone, with no stream object: that identity is what lets a
