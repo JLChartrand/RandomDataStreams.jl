@@ -1,0 +1,31 @@
+% Loaded by Documenter's LaTeX writer immediately after documenter.sty, which
+% is where the overrides below belong: they have to win over its defaults.
+%
+% documenter.sty asks for the DejaVu families by name and lets fontspec guess
+% the italic and bold faces. With polyglossia loaded -- documenter.sty loads it
+% -- that guess misfires: the first slanted text (the `\part` heading on the
+% second page) resolves to a family called "DejaVu", which does not exist, and
+% lualatex stops with
+%
+%     ! Font \TU/DejaVuSans(0)/m/it/10=name:DejaVu not loadable
+%
+% Naming the four faces by file removes the guess. The file names are the same
+% whether DejaVu comes from the system or from TeX Live's `dejavu` package, so
+% this stays portable; only the lookup changes, not the fonts.
+
+\setsansfont{DejaVuSans}[
+  Extension      = .ttf,
+  Scale          = MatchLowercase,
+  Ligatures      = TeX,
+  BoldFont       = *-Bold,
+  ItalicFont     = *-Oblique,
+  BoldItalicFont = *-BoldOblique,
+]
+
+\setmonofont{DejaVuSansMono}[
+  Extension      = .ttf,
+  Scale          = MatchLowercase,
+  BoldFont       = *-Bold,
+  ItalicFont     = *-Oblique,
+  BoldItalicFont = *-BoldOblique,
+]
