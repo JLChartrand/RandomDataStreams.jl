@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/JLChartrand/RandomDataStreams.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/JLChartrand/RandomDataStreams.jl/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/JLChartrand/RandomDataStreams.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/JLChartrand/RandomDataStreams.jl)
-[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://jlchartrand.github.io/RandomDataStreams.jl/dev)
+[![Docs: stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://jlchartrand.github.io/RandomDataStreams.jl/stable)
+[![Docs: dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://jlchartrand.github.io/RandomDataStreams.jl/dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 **Streamable pseudo-random number generators for Julia.**

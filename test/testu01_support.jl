@@ -66,7 +66,7 @@ function report(stats)
     io = IOBuffer()
     for s in stats
         println(io, "    ", lpad(s.index, 3), "  ", rpad(s.name, 32),
-                " p = ", s.p, "  (", TU01.classify(s.p), ")")
+                " p = ", s.p, "  (", TU01.classify(s), ")")
     end
     return String(take!(io))
 end

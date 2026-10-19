@@ -6,6 +6,43 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The TestU01 harness now corrects BigCrush's CollisionOver tests itself.**
+  `validate.jl` reads each count from the log it has just written, and checks
+  that the count gives TestU01's p-value back. It then classifies the ten
+  statistics on the corrected p-value. `pvalues.tsv` and `replay-pvalues.tsv`
+  carry that p-value in a new last column, `corrected`, and `p` keeps
+  TestU01's. `replay.jl` does not replay a CollisionOver test that the
+  correction clears. `bigcrush` refuses `--quiet`, which would drop the counts.
+  A results directory started by an older harness is refused rather than
+  given lines with an extra column.
+
+### Fixed
+
+- **The watchdog restarted a finished campaign every fifteen minutes**, until
+  `stop`, and each time the driver found nothing to do. The driver now writes
+  `<out>/DONE` once every job of the matrix is in `summary.tsv`, and
+  `run-campaign.sh ensure` leaves a campaign with that file alone, as it does
+  one with `STOP`. It still revives the campaign's `krenew`, since a replay may
+  yet write to the directory.
+
+### Validation
+
+- **BigCrush's CollisionOver tests are corrected, and the validation page gives
+  its counts both ways.** The correction was fixed in advance, like the
+  calibration. It keeps TestU01's mean and its rule for a discrete p-value,
+  and compares the number of collisions with a Pólya–Aeppli law in place of
+  the Poisson law: clumps of geometric length, which put the variance at
+  (1 + 1/d)/(1 − 1/d) times the mean. On the calibration it brings the
+  p-values at d = 4 back to uniform (Kolmogorov–Smirnov p = 0.76, from
+  0.019). Over the 105 BigCrush runs it removes six suspects, all from tests
+  10 to 12, and adds none: 31 for 33.6 expected, instead of 37. With
+  Alphabit and Rabbit, it leaves 34 suspects among 17,769 statistics, for
+  35.5 expected, instead of 40. There is still no failure, and no verdict
+  changes. See "CollisionOver on small alphabets" in
+  `docs/src/validation.md`.
+
 ## [0.4.0]
 
 Normals and exponentials are drawn by inversion on every generator, with the
