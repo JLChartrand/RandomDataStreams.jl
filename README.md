@@ -6,12 +6,30 @@
 [![Docs: dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://jlchartrand.github.io/RandomDataStreams.jl/dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
-**Streamable pseudo-random number generators for Julia.**
+**Pseudo-random number generators for Julia, built for variance reduction.**
 
-RandomDataStreams (Random Data Streams) provides random number generators (RNGs) that support
-**non-overlapping streams and substreams**, in the sense of L'Ecuyer et al. (2002).
-This is a key requirement for stochastic simulation, parallel Monte Carlo, and
-reproducible variance-reduction techniques such as common random numbers.
+RandomDataStreams (Random Data Streams) provides random number generators (RNGs)
+**built for variance-reduction techniques** in stochastic simulation and Monte
+Carlo. The techniques it targets — common random numbers, antithetic variates,
+and randomized quasi-Monte Carlo — ask more of an RNG than raw speed: they need
+**non-overlapping streams and substreams** in the sense of L'Ecuyer et al. (2002),
+full positional control within a stream, and variate transforms that preserve the
+coupling a variance-reduction scheme depends on.
+
+### Design principle: variance reduction first, speed second
+
+When two ways of generating numbers are available — a faster one that does not
+interface cleanly with variance-reduction techniques, and a slower one that does
+— **this package chooses the one that interfaces with the techniques.** The clearest
+case is the normal and exponential variates: `randn` and `randexp` draw by
+*inversion* (one uniform per variate through Φ⁻¹ and `-log(1 - u)`) rather than by
+the faster Ziggurat the Julia standard library uses. A normal costs a few
+nanoseconds more this way, but inversion is a monotone map from one uniform, so
+antithetic variates, common random numbers and randomized quasi-Monte Carlo carry
+through from the uniforms to the variates — exactly what the Ziggurat, drawing a
+variable number of uniforms per variate, destroys. The same priority drives the
+stream model, the per-generator substreams, and backward jumps: all exist to make
+the variance-reduction coupling reproducible, not to make raw generation fastest.
 
 Four generator families are provided, the first of them in two sizes:
 
