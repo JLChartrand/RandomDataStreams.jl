@@ -14,7 +14,7 @@ authors:
 affiliations:
   - name: Département d'informatique et de recherche opérationnelle, Université de Montréal, Canada
     index: 1
-date: 30 August 2026
+date: 19 October 2026
 bibliography: paper.bib
 ---
 
@@ -24,7 +24,7 @@ Stochastic simulation rarely needs one stream of random numbers; it needs many,
 each reproducible on its own and provably disjoint from the others.
 `RandomDataStreams.jl` provides the stream and substream object model of
 L'Ecuyer et al. [@lecuyer:2002] for Julia, applied uniformly to four families of
-generator: the combined multiple recursive generator MRG32k3a, the F2-linear
+generator: the combined multiple recursive generators MRG32k3a and MRG63k3a, the F2-linear
 xoshiro and xoroshiro families [@blackman:2021], PCG [@oneill:2014], and the
 counter-based generators Philox and Threefry [@salmon:2011].
 
@@ -48,18 +48,26 @@ needed when a model variant consumes a different amount of randomness than the
 variant it is compared against. The model of L'Ecuyer et al. [@lecuyer:2002]
 answers both: streams are separated by jumps too large to overlap in any
 feasible run, and substream boundaries are anchored, so returning to the start
-of a substream lands in the same place however much of it was consumed.
+of a substream lands in the same place however much of it was consumed. The
+same holds past the uniforms: `randn` and `randexp` draw by inversion, one
+uniform per variate through a monotone map, so that common random numbers and
+antithetic variates carry through to the normals and exponentials built on them.
 
 Julia's standard library offers no such abstraction, and neither does its
 package ecosystem (see *State of the field*). A simulation practitioner moving
 to Julia from SSJ, Arena or Simio therefore loses the stream model that the
 simulation literature has assumed since 2002 — and gains no replacement.
 
+<!-- cuRAND: checked at 833ca9b (Philox) and 73e0f07 (MRG32k3a), against cuRAND 10.4 (CUDA 13.4) -->
 Counter-based generators add a property no recurrence-based generator has: a
 draw is a keyed bijection of its index, so replicate $i$ of stream $s$ can be
 computed without replaying anything before it. That is what allows a GPU kernel
 or a remote worker to reproduce a stream it was assigned, holding no state and
-communicating with nothing. `RandomDataStreams.jl` places both kinds of
+communicating with nothing. Through a CUDA extension, the counter-based
+generators fill GPU arrays with the values the CPU would draw, bit for bit, and
+`PhiloxRNG` and `MRG32k3a` reproduce cuRAND's Philox4_32_10 and MRG32k3a
+streams word for word [@nvidia:curand], so a model whose GPU kernels draw from
+cuRAND can be checked on the CPU. `RandomDataStreams.jl` places both kinds of
 generator behind the same interface, so a model written against it can move
 between them without changing a line.
 
@@ -103,9 +111,9 @@ increments.
 `RandomDataStreams.jl` supplies what is missing rather than another collection
 of generators: the stream object model, the jump machinery each family requires,
 and a test suite that exercises streams against each other rather than one at a
-time. It builds on the ecosystem rather than replacing it — its statistical
-validation runs through the organisation's own `RNGTest.jl` interface to
-TestU01. That inter-stream testing is not incidental. It is what revealed that
+time. It builds on the ecosystem rather than replacing it: every generator is a
+`Random.AbstractRNG`, accepted unchanged wherever Julia's own are. That
+inter-stream testing is not incidental. It is what revealed that
 power-of-two jump distances produce correlated PCG streams — each stream passes
 SmallCrush alone, while sixty-four of them interleaved fail it with fourteen of
 fifteen $p$-values at zero — a defect that cannot arise in a package with no
@@ -119,28 +127,43 @@ published at `xoshiro.di.unimi.it` for the xoshiro and xoroshiro families, and
 NumPy — whose `default_rng()` is PCG64 — for both PCG variants, matching outputs
 and final state. These are tests in the suite, not claims in a comment.
 
-Statistical testing runs through `RNGTest.jl`, the Julia interface to TestU01
-[@lecuyer:2007], along three axes rather than one. The conventional axis tests a
-single stream. The second interleaves many streams in round-robin, which tests
-the streams against each other and is the construction WSC 2021 [@lecuyer:2021]
-calls for; it is what revealed the PCG jump-distance defect described above. The
-third tests the integer paths at bit level, which the $U(0,1)$ batteries never
-examine, since Crush inspects only the high bits of a floating-point output.
+Statistical testing calls TestU01 [@lecuyer:2007] directly, through its
+`TestU01_jll` binary, along three axes rather than one. The conventional axis
+tests a single stream. The second interleaves many streams in round-robin, which
+tests the streams against each other and is the construction WSC 2021
+[@lecuyer:2021] calls for; it is what revealed the PCG jump-distance defect
+described above. It takes either of the two constructions that paper
+describes: separate streams, or the substreams of one stream, which is how
+cuRAND hands them out.
+The third tests the integer paths at bit level, which the $U(0,1)$ batteries
+never examine, since Crush inspects only the high bits of a floating-point
+output.
 
 The test suite runs SmallCrush on all three axes as an installation check.
 Crush and BigCrush are validation exercises rather than installation checks, and
 run on demand through a campaign driver that executes the matrix as independent
 processes and resumes where it left off.
 
-<!-- measured at 2b485cd (v0.3.0) -->
-At v0.3.0 the whole matrix — BigCrush on a single stream and on sixty-four
-streams interleaved one value at a time, for each of the seventeen generators,
-and Alphabit and Rabbit over $2^{30}$ bits on the integer paths — produced 6409
-statistics. None fell outside $[10^{-10}, 1 - 10^{-10}]$, the usual threshold
-for a clear failure. Eleven fell outside $[0.001, 0.999]$, against about 12.8
-expected by chance, and none recurred when replayed three times on streams
-disjoint from the original ones. The per-run results are in the package
+<!-- measured at 2b485cd (v0.3.0), a869931 (three more interleaved shapes) and 638e13c (substreams); v0.4.0 leaves the uniforms unchanged -->
+BigCrush has run 105 times: on a single stream for each of the seventeen
+generators; on interleaved streams for each of them, in four shapes from 16
+streams of eight values each to 1024 streams of one; and on interleaved
+substreams for the four counter-based generators and MRG32k3a, in the same four
+shapes. With Alphabit and Rabbit over $2^{30}$ bits on the integer paths, that
+is 17,769 statistics. None fell outside $[10^{-10}, 1 - 10^{-10}]$, the usual
+threshold for a clear failure. Forty fell outside $[0.001, 0.999]$, against
+about 35.5 expected by chance, and none persisted when replayed on output
+disjoint from the original. The per-run results are in the package
 documentation.
+
+<!-- measured at 405fe65 -->
+The campaigns also exposed a flaw in BigCrush itself. Its CollisionOver tests
+on small alphabets compare the number of collisions among overlapping tuples
+with a Poisson law, but such collisions come in clumps. On TestU01's own AES,
+with no Julia code involved, the variance at alphabet size 4 is 1.76 times the
+Poisson value (95% interval [1.50, 2.10]), against the 5/3 that clumping
+predicts. Each of the two tests concerned therefore flags a perfect generator
+about 1.7% of the time rather than 0.2%.
 
 # Acknowledgements
 
