@@ -198,7 +198,8 @@ has done anything wrong. (The statistics within a run are not independent, as
 several tests compute more than one from the same stream; that widens the
 spread but leaves the expected count unchanged.) The count also assumes that a
 good generator's p-values are uniform on every statistic, and four of BigCrush's
-are not: see [CollisionOver on small alphabets](#CollisionOver-on-small-alphabets).
+are not: see [CollisionOver on small alphabets](#CollisionOver-on-small-alphabets),
+which corrects them and gives the counts below both ways.
 
 The decision rule is in the TestU01 guide, under *Rejecting H₀*:
 
@@ -357,7 +358,9 @@ after a calibration run of 2.6 hours.
 Of 6409 statistics, **none was a failure outright**: the most extreme lay
 2.8 × 10⁻⁶ from 1 (`PCG64DXSM`, Rabbit, MultinomialBitsOver), four orders of
 magnitude short of 10⁻¹⁰. Eleven lines were singled out, against ≈12.8 expected
-from chance. All eleven were replayed three times on streams 1025 and up, and
+from chance, and nine once [CollisionOver is
+corrected](#CollisionOver-on-small-alphabets). All eleven were replayed three
+times on streams 1025 and up, and
 **none of the 33 replications left [0.001, 0.999]**:
 
 | generator | suite | test | original | replay 1 | replay 2 | replay 3 |
@@ -400,8 +403,9 @@ from 2.6 to 5.1 hours each. A suspect is replayed in the shape it arose in.
 
 Of the 8160 statistics of the three new shapes, **none was a failure**: the most
 extreme was 2.8 × 10⁻⁵ (`Xoshiro256ss`, 16 × 8, CollisionOver, t = 21). Eighteen
-were singled out, against ≈16.3 expected, and each was replayed three times in
-its own shape, on streams 1025 and up:
+were singled out, against ≈16.3 expected, and seventeen once CollisionOver is
+corrected. Each was replayed three times in its own shape, on streams 1025 and
+up:
 
 | generator | shape | test | original | replay 1 | replay 2 | replay 3 |
 |---|---|---|---|---|---|---|
@@ -472,7 +476,8 @@ Of the 3200 statistics, **none was a failure**. The most extreme lay
 5.6 × 10⁻⁵ from 1 (`Philox4x32-10`, 1024 × 1, HammingIndep, L = 300). Eleven were
 singled out, against ≈6.4 expected. For comparison, the interleaved suite of the
 same five generators in the same four shapes singled out four of its 3200. Three
-of the eleven are CollisionOver at t = 21; see [CollisionOver on small
+of the eleven are CollisionOver at t = 21, and correcting that test removes all
+three, which leaves eight; see [CollisionOver on small
 alphabets](#CollisionOver-on-small-alphabets). Each was replayed three times in
 its own shape, on substreams 1025 and up of the same stream:
 
@@ -551,8 +556,50 @@ None of these suspects persisted on replay. None could have become a failure
 this way either: under the larger variance, a count at TestU01's 10⁻¹⁰ is still
 4.9 standard deviations out, a few times 10⁻⁷ by the same approximation. The
 verdicts stand. What does not stand is reading a CollisionOver p-value at t = 14
-or 21 at face value. A correction, which compares the count with a variance of
-5/3 μ or 9/7 μ, has not been applied to anything on this page.
+or 21 at face value.
+
+**The correction.** A second protocol, fixed before any corrected p-value was
+computed, replaces the law and nothing else. TestU01's mean is
+N (m²/(2k) − m³/(6k²)), for m = n − t + 1 tuples in k = d^t cells. It turns the
+count C into a p-value with `gofw_pDisc`: P(Y ≥ C) on one side of the median and
+P(Y > C) on the other. The correction keeps both rules. It compares C with a
+Pólya–Aeppli law of that mean in place of the Poisson law: a Poisson number of
+clumps, each of 1 + G collisions, with P(G = g) = (1 − 1/d) d^(−g). That is the
+clumping above written as a law, and its variance is (1 + 1/d)/(1 − 1/d) times
+the mean. It applies to all ten CollisionOver of BigCrush. At d = 64 and above
+it barely moves a p-value, and none of tests 3 to 8 changed class. At no count
+does it make a statistic more severe than TestU01 did. On the calibration it
+brings the p-values back to uniform. At d = 4, 1.8% of them fall below 0.01
+instead of 3.9%, and the Kolmogorov–Smirnov p is 0.76 instead of 0.019.
+
+Applied to the campaigns of this page, with TestU01's counts beside:
+
+| campaign | statistics | outside [0.001, 0.999], TestU01 | corrected | expected |
+|---|---|---|---|---|
+| BigCrush, `single` and `interleaved` 64 × 1 | 5440 | 8 | 6 | 10.9 |
+| BigCrush, `interleaved`, three more shapes | 8160 | 18 | 17 | 16.3 |
+| BigCrush, `substreams` | 3200 | 11 | 8 | 6.4 |
+| **all 105 BigCrush runs** | 16 800 | 37 | **31** | 33.6 |
+| with Alphabit and Rabbit | 17 769 | 40 | **34** | 35.5 |
+
+Six suspects drop out. Five are CollisionOver, t = 21:
+- `Xoshiro512pp`, `single`;
+- `MRG32k3a`, `interleaved` 16 × 8;
+- on substreams, `Philox4x64-10` at 64 × 1, and `MRG32k3a` and
+  `Philox4x32-10` at 16 × 8.
+
+The sixth is CollisionOver, t = 14, for `Xoroshiro128p`, `interleaved`.
+
+Two suspects at t = 14 and 21 remain, nearer the centre:
+- `Philox4x32-10`, 16 × 8, moves from 8.3 × 10⁻⁵ to 4.6 × 10⁻⁴;
+- `Xoshiro256ss`, 16 × 8, moves from 2.8 × 10⁻⁵ to 9.5 × 10⁻⁴.
+
+At d = 4, five of the 210 p-values stay below 0.01, against 2.1 expected
+(binomial p = 0.06). That is not significant. It is reported without a
+conclusion, since these values are the ones that raised the question in the
+first place. The harness does not apply the correction yet: `pvalues.tsv`
+holds TestU01's p-values, and the correction is computed afterwards from the
+counts the log prints.
 
 ```bash
 # one job of the calibration: TestU01's AES under key 1, tests 3, 4 and 9 to 12

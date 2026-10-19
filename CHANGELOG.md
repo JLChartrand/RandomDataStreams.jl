@@ -15,6 +15,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   one with `STOP`. It still revives the campaign's `krenew`, since a replay may
   yet write to the directory.
 
+### Validation
+
+- **BigCrush's CollisionOver tests are corrected, and the validation page gives
+  its counts both ways.** The correction was fixed in advance, like the
+  calibration. It keeps TestU01's mean and its rule for a discrete p-value,
+  and compares the number of collisions with a Pólya–Aeppli law in place of
+  the Poisson law: clumps of geometric length, which put the variance at
+  (1 + 1/d)/(1 − 1/d) times the mean. On the calibration it brings the
+  p-values at d = 4 back to uniform (Kolmogorov–Smirnov p = 0.76, from
+  0.019). Over the 105 BigCrush runs it removes six suspects, all from tests
+  10 to 12, and adds none: 31 for 33.6 expected, instead of 37. With
+  Alphabit and Rabbit, it leaves 34 suspects among 17,769 statistics, for
+  35.5 expected, instead of 40. There is still no failure, and no verdict
+  changes. See "CollisionOver on small alphabets" in
+  `docs/src/validation.md`.
+
 ## [0.4.0]
 
 Normals and exponentials are drawn by inversion on every generator, with the
