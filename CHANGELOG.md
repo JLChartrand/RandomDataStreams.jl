@@ -468,13 +468,14 @@ was registered from, to `e6376ae`.
   zero. Stream and substream distances are now odd, `2^32(2^64+1)+1` and
   `2^64+1`. Found by the interleaved battery, which is in the test suite.
 
-## 0.1.0
+## [0.1.0]
 
 Initial release: `MRG32k3a` and the xoshiro/xoroshiro families, with the stream
-and substream object model of L'Ecuyer et al. (2002). Registered without a git
-tag, which is why there is no comparison link for it below.
+and substream object model of L'Ecuyer et al. (2002). Registered on 2026-08-29
+from `6449bd8`, without a git tag; `v0.1.0` was added on 2026-10-18.
 
 [Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/e6376ae...v0.3.0
 [0.2.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/6449bd8...e6376ae
+[0.1.0]: https://github.com/JLChartrand/RandomDataStreams.jl/tree/v0.1.0
