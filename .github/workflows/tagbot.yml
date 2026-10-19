@@ -1,18 +1,35 @@
 name: TagBot
 
+# When a registry PR merges, JuliaTagBot comments on its trigger issue here
+# (#4), and that comment starts the run, as in TagBot's example.yml. The
+# condition used to name JuliaRegistrator instead, so every such run was
+# skipped and no version was ever tagged by itself.
 on:
   issue_comment:
     types: [created]
   workflow_dispatch:
 
+# TagBot's README would rather have no block here and the repository's
+# default set to read and write. The default is not visible from outside the
+# settings, so the block stays, with what TagBot uses: contents for tags and
+# releases, issues for the one it files when a release needs a hand (without
+# it, that was a 403), pull requests to write the changelog.
 permissions:
   contents: write
+  issues: write
+  pull-requests: read
 
 jobs:
   TagBot:
-    if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaRegistrator'
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
     runs-on: ubuntu-latest
     steps:
       - uses: JuliaRegistries/TagBot@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # A tag pushed with GITHUB_TOKEN starts no other workflow, so the
+          # documentation of a new version is not deployed until docs.yml is
+          # run by hand on its tag. With a deploy key in DOCUMENTER_KEY, TagBot
+          # pushes the tag over SSH and docs.yml runs by itself; without the
+          # secret this input is empty and TagBot uses the token.
+          ssh: ${{ secrets.DOCUMENTER_KEY }}
