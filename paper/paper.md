@@ -151,19 +151,21 @@ streams of eight values each to 1024 streams of one; and on interleaved
 substreams for the four counter-based generators and MRG32k3a, in the same four
 shapes. With Alphabit and Rabbit over $2^{30}$ bits on the integer paths, that
 is 17,769 statistics. None fell outside $[10^{-10}, 1 - 10^{-10}]$, the usual
-threshold for a clear failure. Forty fell outside $[0.001, 0.999]$, against
-about 35.5 expected by chance, and none persisted when replayed on output
-disjoint from the original. The per-run results are in the package
-documentation.
+threshold for a clear failure. Thirty-four fell outside $[0.001, 0.999]$ once
+the flaw below is corrected (forty without the correction), against about 35.5
+expected by chance. None persisted when replayed on output disjoint from the
+original. The per-run results are in the package documentation.
 
-<!-- measured at 405fe65 -->
+<!-- measured at 405fe65; correction fixed before computing, applied to the campaigns above -->
 The campaigns also exposed a flaw in BigCrush itself. Its CollisionOver tests
 on small alphabets compare the number of collisions among overlapping tuples
 with a Poisson law, but such collisions come in clumps. On TestU01's own AES,
 with no Julia code involved, the variance at alphabet size 4 is 1.76 times the
 Poisson value (95% interval [1.50, 2.10]), against the 5/3 that clumping
 predicts. Each of the two tests concerned therefore flags a perfect generator
-about 1.7% of the time rather than 0.2%.
+about 1.7% of the time rather than 0.2%. A compound Poisson law with clumps of
+geometric length has that variance. Comparing the count with it instead brings
+these p-values back to uniform (Kolmogorov–Smirnov $p = 0.76$, against 0.019).
 
 # Acknowledgements
 
