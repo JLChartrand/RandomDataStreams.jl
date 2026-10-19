@@ -299,12 +299,23 @@ flush_c_stdout() = ccall(:fflush, Cint, (Ptr{Cvoid},), C_NULL)
 One line of a battery's answer: the index TestU01 gave it, the name it prints
 (`"RandomWalk1 H"`, `"MaxOft AD"`), and the p-value as the double the library
 computed rather than the string it formats.
+
+`corrected` is `nothing` except where [`correct`](@ref) has replaced TestU01's
+law, and then it is the p-value the statistic is judged by; `p` stays the
+library's, which is archived beside it. Read the one to judge by with
+[`pvalue`](@ref).
 """
 struct Statistic
     index::Int
     name::String
     p::Float64
+    corrected::Union{Nothing,Float64}
 end
+
+Statistic(index::Integer, name::AbstractString, p::Real) = Statistic(index, name, p, nothing)
+
+"The p-value a statistic is judged by: the corrected one if there is one, TestU01's otherwise."
+pvalue(s::Statistic) = something(s.corrected, s.p)
 
 """
     results() -> Vector{Statistic}
@@ -342,15 +353,225 @@ const FAIL = 1e-10
 
 """
     classify(p) -> :fail | :suspect | :pass
+    classify(s::Statistic)
+
+A statistic is classified on [`pvalue`](@ref): its corrected p-value where it
+has one.
 """
 classify(p::Real) = (p < FAIL || p > 1 - FAIL) ? :fail :
                     (p < SUSPECT || p > 1 - SUSPECT) ? :suspect : :pass
+classify(s::Statistic) = classify(pvalue(s))
 
-"Statistics a battery would single out: p outside [0.001, 0.999]."
-suspects(stats::AbstractVector{Statistic}) = filter(s -> classify(s.p) !== :pass, stats)
+"Statistics the decision rule singles out: [`pvalue`](@ref) outside [0.001, 0.999]."
+suspects(stats::AbstractVector{Statistic}) = filter(s -> classify(s) !== :pass, stats)
 
-"Statistics that are failures outright: p outside [1e-10, 1 - 1e-10]."
-failures(stats::AbstractVector{Statistic}) = filter(s -> classify(s.p) === :fail, stats)
+"Statistics that are failures outright: [`pvalue`](@ref) outside [1e-10, 1 - 1e-10]."
+failures(stats::AbstractVector{Statistic}) = filter(s -> classify(s) === :fail, stats)
+
+# CollisionOver on small alphabets ---------------------------------------------
+#
+# BigCrush's tests 3 to 12 are CollisionOver: n overlapping t-tuples over an
+# alphabet of d letters, so k = d^t cells, the collisions counted in each of N
+# replications and their sum compared with a Poisson law. On a small alphabet
+# that law is wrong for every generator. If tuples i and j collide, tuples i + 1
+# and j + 1 collide too with probability 1/d, so collisions come in clumps, and
+# the count's variance is (1 + 1/d)/(1 − 1/d) times its mean rather than equal
+# to it. At d = 4 that is 5/3, which TestU01's own AES confirmed (1.76, 95%
+# interval [1.50, 2.10]); a perfect generator is singled out by each of tests 11
+# and 12 about 1.7% of the time rather than 0.2%. docs/src/validation.md has the
+# calibration.
+#
+# The correction replaces the law and nothing else. It keeps TestU01's mean and
+# its rule for turning a count into a p-value, and compares the count with a
+# Pólya–Aeppli law of that mean: a Poisson number of clumps, each of 1 + G
+# collisions, P(G = g) = (1 − 1/d) d^(−g). It was fixed before any corrected
+# p-value was computed (wsc/correction-collisionover/PROTOCOL.md in the papers
+# repository), and the decision rule now classifies these ten statistics on it.
+#
+# The count is not among the globals -- `bbattery_pVal[]` holds the p-value
+# alone -- so it is read from the battery's log, where TestU01 prints it as an
+# integer. The p-value is then recomputed from it under TestU01's law and
+# compared with the double the library returned, which is what says that the
+# block read is the statistic's own.
+
+"""
+    COLLISIONOVER
+
+The batteries whose CollisionOver statistics are corrected, with what their
+tests share -- N replications of n tuples, in k = d^t cells -- and each test by
+its number, with the bits it drops (r) and its tuple size (t). BigCrush alone:
+the calibration measured its tests, and Crush's, which have other parameters,
+were not part of it.
+"""
+const COLLISIONOVER = Dict(
+    :bigcrush => (N = 30, n = 20_000_000, k = 2^42,
+                  tests = [3 => (r = 0, t = 2),   4 => (r = 9, t = 2),
+                           5 => (r = 0, t = 3),   6 => (r = 16, t = 3),
+                           7 => (r = 0, t = 7),   8 => (r = 24, t = 7),
+                           9 => (r = 0, t = 14), 10 => (r = 27, t = 14),
+                           11 => (r = 0, t = 21), 12 => (r = 28, t = 21)]))
+
+"""
+    collisionover_mean(N, n, k, t) -> Float64
+
+The mean TestU01 gives the sum of N counts: m²/(2k) − m³/(6k²) per replication,
+for m = n − t + 1 overlapping tuples in k cells. The log prints it rounded
+(1364.24 for BigCrush); this form was recovered from the archived campaigns, and
+reproduces every CollisionOver p-value they hold to within 3 × 10⁻¹¹.
+"""
+function collisionover_mean(N::Integer, n::Integer, k::Integer, t::Integer)
+    m, kf = Float64(n - t + 1), Float64(k)
+    return N * (m^2 / (2kf) - m^3 / (6kf^2))
+end
+
+"""
+    polya_aeppli_tails(c, mean, q) -> (P(S ≤ c), P(S ≥ c))
+
+The two tails at `c` of a Pólya–Aeppli variable S of the given mean: a Poisson
+number of clumps, of mean `mean (1 − q)`, each of 1 + G with
+P(G = g) = (1 − q) q^g. At `q = 0` every clump is one collision, and S is
+Poisson.
+"""
+function polya_aeppli_tails(c::Integer, mean::Real, q::Real)
+    θ = mean * (1 - q)
+    top = ceil(Int, mean + 60 * sqrt(mean * (1 + q) / (1 - q)))  # 60 sd: past the last double
+    c < 0 && return (0.0, 1.0)
+    c > top && return (1.0, 0.0)
+    # Panjer's recursion for a compound Poisson law, P(n) = (θ/n) Σⱼ j fⱼ P(n − j),
+    # with clump sizes fⱼ = (1 − q) q^(j−1). Its two sums over j follow from one
+    # n to the next, so the whole law up to `top` costs a pass, and every term
+    # is positive: nothing cancels. P(0) = e^(−θ) underflows, so `w` holds the
+    # law up to a factor, rescaled when it grows; the tails are ratios of sums.
+    w = Vector{Float64}(undef, top + 1)     # w[n + 1] ∝ P(S = n)
+    w[1] = 1.0
+    a = b = 1.0                             # Σⱼ q^(j−1) w(n − j) and Σⱼ j q^(j−1) w(n − j)
+    for n in 1:top
+        w[n + 1] = θ * (1 - q) / n * b
+        a, b = w[n + 1] + q * a, w[n + 1] + q * (a + b)
+        if w[n + 1] > 1e250
+            w[1:n + 1] .*= 1e-250
+            a *= 1e-250
+            b *= 1e-250
+        end
+    end
+    total = sum(w)
+    return sum(@view w[1:c + 1]) / total, sum(@view w[c + 1:end]) / total
+end
+
+"""
+    pdisc(left, right) -> Float64
+
+`gofw_pDisc`, TestU01's p-value for a discrete statistic from P(Y ≤ y) and
+P(Y ≥ y): the right tail above the median, the complement of the left tail
+below it, and 0.5 at it.
+"""
+pdisc(left::Real, right::Real) = right < left ? right : left > 0.5 ? 0.5 : 1 - left
+
+"""
+    collisionover_p(count, N, n, d, t; q = 1/d) -> Float64
+
+The p-value of `count` collisions, summed over N CollisionOver replications of
+n tuples on an alphabet of `d` letters: corrected at the default, and TestU01's
+own at `q = 0`.
+"""
+function collisionover_p(count::Integer, N::Integer, n::Integer, d::Integer, t::Integer;
+                         q::Real = 1 / d)
+    mean = collisionover_mean(N, n, big(d)^t, t)
+    return pdisc(polya_aeppli_tails(count, mean, q)...)
+end
+
+const _PARAMS = r"N =\s*(\d+),\s*n =\s*(\d+),\s*r =\s*(\d+),\s*d =\s*(\d+),\s*t =\s*(\d+),"
+const _OBSERVED = r"Observed number of collisions\s*:\s*(\d+)"
+
+"""
+    collision_counts(log) -> Vector{NamedTuple}
+
+Every CollisionOver of a TestU01 log, in the order the battery ran them, as
+`(N, n, r, d, t, count)`: the parameters from the line that opens the test, the
+count from "Observed number of collisions" under "Results of CollisionOver
+test". Other tests print collision counts of their own, and that heading keeps
+them out. A battery run with [`verbose!`](@ref)`(false)` prints neither, and
+gives an empty list.
+"""
+function collision_counts(log::AbstractString)
+    out = NamedTuple{(:N, :n, :r, :d, :t, :count),NTuple{6,Int}}[]
+    params, inresult = nothing, false
+    for line in eachline(log)
+        m = match(_PARAMS, line)
+        if m !== nothing
+            params, inresult = parse.(Int, m.captures), false
+        elseif startswith(line, "Results of CollisionOver test")
+            inresult = true
+        elseif inresult && params !== nothing && (m = match(_OBSERVED, line)) !== nothing
+            N, n, r, d, t = params
+            push!(out, (N = N, n = n, r = r, d = d, t = t, count = parse(Int, m[1])))
+            inresult = false
+        end
+    end
+    return out
+end
+
+"""
+    correct(battery, stats, log) -> Vector{Statistic}
+
+`stats` with the CollisionOver statistics of `battery` corrected, from the
+counts in `log`, the battery's own report. A battery not in
+[`COLLISIONOVER`](@ref), or a run without CollisionOver statistics, comes back
+unchanged. Works on a repeat battery as on the full one: the statistics and the
+blocks of the log are paired in the order they ran.
+
+Throws if the log does not account for the statistics -- a block missing, a
+tuple size or a cell count that is not the battery's, or a count from which
+TestU01's law does not give back TestU01's p-value. A caller that cannot afford
+to lose the run should keep `stats` as they are and say so.
+"""
+function correct(battery::Symbol, stats::AbstractVector{Statistic}, log::AbstractString)
+    shared = get(COLLISIONOVER, battery, nothing)
+    shared === nothing && return collect(stats)
+    at = findall(s -> occursin(r"^CollisionOver, t = \d+$", s.name), stats)
+    isempty(at) && return collect(stats)
+    blocks = collision_counts(log)
+    length(blocks) == length(at) ||
+        error("$log has $(length(blocks)) CollisionOver results for $(length(at)) statistics" *
+              (isempty(blocks) ? "; a quiet battery does not print the counts" : ""))
+    out = collect(stats)
+    for (i, b) in zip(at, blocks)
+        s = stats[i]
+        s.name == "CollisionOver, t = $(b.t)" && (b.N, b.n) == (shared.N, shared.n) &&
+            big(b.d)^b.t == shared.k ||
+            error("statistic $(s.index) ($(s.name)) is paired with a block of $log " *
+                  "with N = $(b.N), n = $(b.n), d = $(b.d), t = $(b.t)")
+        testu01 = collisionover_p(b.count, b.N, b.n, b.d, b.t; q = 0)
+        abs(testu01 - s.p) <= 1e-9 ||
+            error("statistic $(s.index) ($(s.name)): $(b.count) collisions give " *
+                  "p = $testu01 under TestU01's law, and TestU01 returned $(s.p)")
+        out[i] = Statistic(s.index, s.name, s.p, collisionover_p(b.count, b.N, b.n, b.d, b.t))
+    end
+    return out
+end
+
+"""
+    corrected_tests(battery, log) -> Dict{Int,Float64}
+
+The corrected p-value of each CollisionOver test in a battery's log, by the
+test number its closing summary prints -- which is what a replay asks for, and
+which [`correct`](@ref) does not see, since a statistic carries an index
+instead. A test is recognised by its r and t rather than by its place in the
+log. Empty for a battery not in [`COLLISIONOVER`](@ref), and for a quiet log.
+"""
+function corrected_tests(battery::Symbol, log::AbstractString)
+    out = Dict{Int,Float64}()
+    shared = get(COLLISIONOVER, battery, nothing)
+    shared === nothing && return out
+    blocks = collision_counts(log)
+    for (test, at) in shared.tests
+        i = findfirst(b -> (b.N, b.n, b.r, b.t) == (shared.N, shared.n, at.r, at.t), blocks)
+        i === nothing && continue
+        b = blocks[i]
+        out[test] = collisionover_p(b.count, b.N, b.n, b.d, b.t)
+    end
+    return out
+end
 
 # Batteries -------------------------------------------------------------------
 #

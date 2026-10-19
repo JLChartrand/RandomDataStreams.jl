@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The TestU01 harness now corrects BigCrush's CollisionOver tests itself.**
+  `validate.jl` reads each count from the log it has just written, and checks
+  that the count gives TestU01's p-value back. It then classifies the ten
+  statistics on the corrected p-value. `pvalues.tsv` and `replay-pvalues.tsv`
+  carry that p-value in a new last column, `corrected`, and `p` keeps
+  TestU01's. `replay.jl` does not replay a CollisionOver test that the
+  correction clears. `bigcrush` refuses `--quiet`, which would drop the counts.
+  A results directory started by an older harness is refused rather than
+  given lines with an extra column.
+
 ### Fixed
 
 - **The watchdog restarted a finished campaign every fifteen minutes**, until

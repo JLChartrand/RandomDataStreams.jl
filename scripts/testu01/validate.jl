@@ -31,7 +31,9 @@
 # rather than from the printed report, so the p-values are the doubles the
 # library computed and can be classified without parsing anything; and one line
 # in `summary.tsv` recording the run, its cost and how many statistics it
-# singled out.
+# singled out. BigCrush's ten CollisionOver statistics are classified on a
+# corrected p-value, which `pvalues.tsv` carries beside TestU01's (see
+# `TU01.correct`).
 
 include(joinpath(@__DIR__, "..", "env.jl"))
 ensure_checkout_env(@__DIR__)
@@ -184,6 +186,40 @@ the platform where the real one fails.
 """
 closure_unsupported(err) = occursin("closures are not supported", sprint(showerror, err))
 
+"""
+    corrected(battery, stats, log) -> Vector{TU01.Statistic}
+
+`TU01.correct`, except that a log it cannot account for leaves the statistics
+as TestU01 returned them, with a warning, rather than losing a battery that has
+already run. Their p-values are in `pvalues.tsv` either way, and the correction
+can be made afterwards.
+"""
+function corrected(battery::AbstractString, stats, log::AbstractString)
+    try
+        return TU01.correct(Symbol(battery), stats, log)
+    catch err
+        @warn "CollisionOver left uncorrected: classified on TestU01's p-values" exception = err
+        return collect(stats)
+    end
+end
+
+"""
+    tsv(path, header)
+
+Start the TSV file at `path` with its header, or check that the one already
+there has the same columns: lines appended under an older header would be read
+against the wrong ones.
+"""
+function tsv(path::AbstractString, header::AbstractString)
+    if !isfile(path)
+        open(io -> println(io, header), path, "w")
+    elseif readline(path) != header
+        error("$path was started by an older version of this script, with other " *
+              "columns; give this run another --out")
+    end
+    return path
+end
+
 # Each entry runs one battery over a live generator and returns its statistics.
 # The bit-level batteries take the number of bits to consume, which is why they
 # are given the options rather than the generator alone.
@@ -238,6 +274,9 @@ function parse_args(args)
     haskey(BATTERIES, opts.battery) ||
         error("unknown battery: $(opts.battery) (have $(join(sort(collect(keys(BATTERIES))), ", ")))")
     opts.bits > 0 || error("--bits must be positive")
+    opts.quiet && haskey(TU01.COLLISIONOVER, Symbol(opts.battery)) &&
+        error("--quiet drops the per-test reports, and with them the CollisionOver counts " *
+              "that $(opts.battery)'s statistics are corrected from")
     return opts
 end
 
@@ -290,10 +329,11 @@ function main(args)
     # One line per statistic, for every run in this directory: the exact
     # p-values, which the printed report only ever shows in its own formatting
     # ("eps", "1 -  3.0e-9"). Classifying against 1e-10 is not something to do
-    # on text.
-    pvals = joinpath(opts.out, "pvalues.tsv")
-    isfile(pvals) || open(io -> println(io,
-        "timestamp\tbattery\tsuite\tgenerator\tindex\tname\tp\tclass\tlog"), pvals, "w")
+    # on text. `p` is TestU01's; `corrected`, last so that the other columns
+    # keep their places, is the p-value `class` was decided on where there is
+    # one, and empty elsewhere.
+    pvals = tsv(joinpath(opts.out, "pvalues.tsv"),
+                "timestamp\tbattery\tsuite\tgenerator\tindex\tname\tp\tclass\tlog\tcorrected")
 
     println()
     for (name, suite) in runs
@@ -347,16 +387,22 @@ function main(args)
             end
         end
 
+        # The log is closed, and holds the counts the correction needs.
+        stats = corrected(opts.battery, stats, log)
         bad = TU01.suspects(stats)
         failed = TU01.failures(stats)
+        # What TestU01's own p-values single out, for the console to say when
+        # the correction changed it.
+        bad_testu01 = count(s -> TU01.classify(s.p) !== :pass, stats)
         # How far the most extreme statistic sits from the middle: min(p, 1-p)
         # over the run, so one number says whether anything happened at all.
-        extreme = isempty(stats) ? NaN : minimum(s -> min(s.p, 1 - s.p), stats)
+        extreme = isempty(stats) ? NaN : minimum(s -> min(TU01.pvalue(s), 1 - TU01.pvalue(s)), stats)
 
         open(pvals, "a") do io
             for st in stats
                 println(io, join((now(), opts.battery, suite, name, st.index, st.name,
-                                  st.p, TU01.classify(st.p), basename(log)), '\t'))
+                                  st.p, TU01.classify(st), basename(log),
+                                  something(st.corrected, "")), '\t'))
             end
         end
         open(index, "a") do io
@@ -377,6 +423,8 @@ function main(args)
         else
             println("none singled out")
         end
+        bad_testu01 == length(bad) ||
+            @printf("    (%d on TestU01's own p-values, before CollisionOver is corrected)\n", bad_testu01)
     end
 
     println("\nSummary index: ", index)
@@ -387,6 +435,9 @@ function main(args)
     println("anything. One outside [1e-10, 1-1e-10] is a failure outright. The test")
     println("numbers replay.jl needs are in the log's closing summary; the p-values")
     println("themselves are in pvalues.tsv, exactly as the library computed them.")
+    haskey(TU01.COLLISIONOVER, Symbol(opts.battery)) && println(
+        "The CollisionOver statistics are classified on their corrected p-values,\n" *
+        "in its last column; the log's summary lists them on TestU01's.")
 end
 
 # Run the driver only when this file is the program. campaign.jl invokes it as

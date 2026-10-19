@@ -42,6 +42,11 @@
 # rep. That is worth stating because a battery reports more statistics than it
 # has tests (144 against 96 for Crush): several statistics can carry the same
 # number, and five lines reading "10 RandomWalk1 ..." are one test, not five.
+#
+# BigCrush's CollisionOver tests are judged on a corrected p-value (see
+# `TU01.correct`), and the summary report lists them on TestU01's. A test it
+# lists that the correction clears is not a suspect, and is not replayed; a
+# replay of one that stays is classified on its own corrected p-value.
 
 include("validate.jl")
 
@@ -239,7 +244,13 @@ function parse_args(args)
         isempty(opts.battery)   && (opts = merge(opts, (battery = b,)))
         isempty(opts.suite)     && (opts = merge(opts, (suite = s,)))
         isempty(opts.generator) && (opts = merge(opts, (generator = g,)))
-        isempty(opts.tests)     && (opts = merge(opts, (tests = first.(suspects(opts.log)),)))
+        if isempty(opts.tests)
+            # What the log singled out, less what the correction clears.
+            fixed = TU01.corrected_tests(Symbol(opts.battery), opts.log)
+            keep = filter(t -> !(haskey(fixed, t) && TU01.classify(fixed[t]) === :pass),
+                          first.(suspects(opts.log)))
+            opts = merge(opts, (tests = keep,))
+        end
         isempty(opts.out)       && (opts = merge(opts, (out = dirname(opts.log),)))
         opts.bits == 0          && (opts = merge(opts, (bits = log_bits(opts.log),)))
         shape = shaped(opts.suite) ? log_shape(opts.log) : nothing
@@ -283,15 +294,25 @@ function main(args)
     println("TestU01 replay -- ", opts.battery, " / ", opts.suite, " / ", opts.generator)
     println("Julia ", VERSION, ", ", Sys.CPU_NAME, ", ", Sys.MACHINE)
     println(provenance_line(PROV))
+    flagged = isempty(opts.log) ? Tuple{Int,String,String}[] : suspects(opts.log)
     if !isempty(opts.log)
         println("source log: ", opts.log)
-        for (t, name, p) in suspects(opts.log)
-            @printf("  test %3d  %-32s p = %s\n", t, name, p)
+        fixed = TU01.corrected_tests(Symbol(opts.battery), opts.log)
+        for (t, name, p) in flagged
+            @printf("  test %3d  %-32s p = %s", t, name, p)
+            if haskey(fixed, t)
+                @printf(", corrected %.2g", fixed[t])
+                TU01.classify(fixed[t]) === :pass && t ∉ opts.tests &&
+                    print(": not a suspect, not replayed")
+            end
+            println()
         end
     end
 
     if isempty(opts.tests)
-        println("\nNothing to replay: that run singled out no p-value.")
+        println("\nNothing to replay: ",
+                isempty(flagged) ? "that run singled out no p-value." :
+                "the correction clears every test that run singled out.")
         return
     end
 
@@ -313,9 +334,18 @@ function main(args)
         rep[t + 1] = opts.reps       # rep[i] in C is rep[i+1] here
     end
 
-    gen = build_disjoint(opts.suite, opts.generator, opts.streams, opts.values, opts.skip)
-
     mkpath(opts.out)
+    # Every statistic the replay produced, not only the ones a battery would
+    # single out: what settles a suspect is the spread of the replications, and
+    # the guide is explicit that reporting the p-values "provides more
+    # information" than a verdict against a threshold. Checked before the
+    # replay runs rather than after: `corrected` is the p-value `class` was
+    # decided on, where there is one, and a file started without that column
+    # cannot take these lines.
+    pvals = tsv(joinpath(opts.out, "replay-pvalues.tsv"),
+                "timestamp\tbattery\tsuite\tgenerator\treps\tindex\tname\tp\tclass\tlog\tcorrected")
+
+    gen = build_disjoint(opts.suite, opts.generator, opts.streams, opts.values, opts.skip)
     stamp = Dates.format(now(), "yyyymmdd-HHMMSS")
     tag = replace(opts.generator, r"[^\w]" => "_")
     log = joinpath(opts.out, "$(opts.battery)-$(opts.suite)-$tag-replay-$stamp.log")
@@ -348,6 +378,7 @@ function main(args)
             end
         end
     end
+    stats = corrected(opts.battery, stats, log)
 
     index = joinpath(opts.out, "replays.tsv")
     isfile(index) || open(io -> println(io,
@@ -362,26 +393,21 @@ function main(args)
                           length(TU01.failures(stats))), '\t'))
     end
 
-    # Every statistic the replay produced, not only the ones a battery would
-    # single out: what settles a suspect is the spread of the replications, and
-    # the guide is explicit that reporting the p-values "provides more
-    # information" than a verdict against a threshold.
-    pvals = joinpath(opts.out, "replay-pvalues.tsv")
-    isfile(pvals) || open(io -> println(io,
-        "timestamp\tbattery\tsuite\tgenerator\treps\tindex\tname\tp\tclass\tlog"), pvals, "w")
     open(pvals, "a") do io
         for st in stats
             println(io, join((now(), opts.battery, opts.suite, opts.generator, opts.reps,
-                              st.index, st.name, st.p, TU01.classify(st.p),
-                              basename(log)), '\t'))
+                              st.index, st.name, st.p, TU01.classify(st),
+                              basename(log), something(st.corrected, "")), '\t'))
         end
     end
 
     @printf("    done in %.1f s\n", elapsed)
     println()
     for st in stats
-        @printf("  %3d  %-34s p = %-24g %s\n", st.index, st.name, st.p,
-                TU01.classify(st.p) === :pass ? "" : string("<-- ", TU01.classify(st.p)))
+        @printf("  %3d  %-34s p = %-24g", st.index, st.name, st.p)
+        st.corrected === nothing || @printf(" corrected %-24g", st.corrected)
+        TU01.classify(st) === :pass || print(" <-- ", TU01.classify(st))
+        println()
     end
     println()
     println("Read those against the originals. A p-value that stays extreme across")

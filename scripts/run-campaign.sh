@@ -1057,7 +1057,7 @@ cmd_replay() {
               $([ "$DRY_RUN" -eq 1 ] && echo --list) || rc=$?
         if [ "$rc" -ne 0 ]; then
             skipped=$((skipped + 1))
-            info "skipped $name (no complete log to read)"
+            info "skipped $name (replay.jl said why, above)"
         else
             ran=$((ran + 1))
         fi

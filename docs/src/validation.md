@@ -162,7 +162,7 @@ julia scripts/testu01/validate.jl --battery=bigcrush --suite=single
 | `--bits` | output consumed by `alphabit` and `rabbit` | 2³⁰ |
 | `--out` | directory for logs | `testu01-results` |
 | `--list` | print the plan and exit | |
-| `--quiet` | summary only, no per-test reports | |
+| `--quiet` | summary only, no per-test reports; refused for `bigcrush` | |
 
 Each run writes three things. TestU01's own report goes to its own log:
 per-test reports are on by default, because they are the canonical artefact to
@@ -175,7 +175,12 @@ the question "did anything happen" is answered without opening a log.
 `pvalues.tsv` gets one line per statistic — index, name, p-value, class —
 taken from `bbattery_pVal[]` rather than from the printed report, which shows
 p-values in TestU01's own formatting (`eps`, `1 -  3.0e-9`). Classifying
-against 10⁻¹⁰ is not something to do on text.
+against 10⁻¹⁰ is not something to do on text. A last column, `corrected`, is
+filled for BigCrush's ten CollisionOver statistics alone: it is the p-value
+their class is decided on, and `p` keeps TestU01's (see [CollisionOver on small
+alphabets](#CollisionOver-on-small-alphabets)). The counts in `summary.tsv`
+follow the classes. The correction reads its counts from BigCrush's per-test
+reports, which is why `bigcrush` refuses `--quiet`.
 
 Run it under `nohup` or `tmux`:
 
@@ -260,7 +265,16 @@ the work the method requires.
 its log, with every statistic it produced — not only the ones a battery would
 single out, since what settles a suspect is the spread of the replications, and
 the guide is explicit that reporting the p-values "provides more information"
-than a verdict. The console prints the same list.
+than a verdict. The console prints the same list. A replay of a BigCrush
+CollisionOver test is classified on its corrected p-value, which goes in the
+same `corrected` column as in `pvalues.tsv`.
+
+**A CollisionOver test the correction clears is not replayed.** The summary
+report lists the CollisionOver tests on TestU01's p-values. The replay computes
+the corrected p-value of each one from the count in the log, and drops a test
+whose corrected p-value lies in [0.001, 0.999], saying so. It can start from
+TestU01's list because the correction never makes a class more severe: at
+every count from 0 to 3000, the corrected class is TestU01's or a milder one.
 
 **The number beside a suspect is the test, not the statistic.** A battery
 reports more statistics than it has tests (144 against 96 for Crush), and
@@ -597,9 +611,7 @@ Two suspects at t = 14 and 21 remain, nearer the centre:
 At d = 4, five of the 210 p-values stay below 0.01, against 2.1 expected
 (binomial p = 0.06). That is not significant. It is reported without a
 conclusion, since these values are the ones that raised the question in the
-first place. The harness does not apply the correction yet: `pvalues.tsv`
-holds TestU01's p-values, and the correction is computed afterwards from the
-counts the log prints.
+first place.
 
 ```bash
 # one job of the calibration: TestU01's AES under key 1, tests 3, 4 and 9 to 12
@@ -611,6 +623,15 @@ Each job writes the TestU01 log and `collisions.tsv`, which has one line per
 replication: the number of collisions, the p-value and the commit. The
 calibration ran 20 such AES jobs (keys 1 to 20) and three `Philox4x32-10` jobs
 (streams 4097 to 4099), 24 jobs at a time, in three hours.
+
+The campaigns on this page ran before the harness applied the correction.
+Their counts were corrected afterwards, from the logs. The harness now applies
+it when a battery ends. `validate.jl` reads each count from the log it has just
+written. It checks that the Poisson law gives TestU01's p-value back from that
+count, and it classifies the statistic on the corrected p-value, which it
+writes beside TestU01's in `pvalues.tsv`. If the log does not account for the
+statistics, the run keeps TestU01's classes and warns, rather than losing a
+battery that has already run. The p-values are in `pvalues.tsv` either way.
 
 ## Long campaigns: running for days without a session
 
