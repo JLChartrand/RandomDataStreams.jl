@@ -969,9 +969,11 @@ EOF
 }
 
 # Idempotent start, for the watchdog: do nothing if it is already running, if
-# there is nothing prepared, or if the campaign was stopped on purpose.
-# `touch <out>/STOP` is the documented clean stop, and a watchdog that undid it
-# fifteen minutes later would make that instruction a lie.
+# there is nothing prepared, if the campaign was stopped on purpose, or if it
+# is finished. `touch <out>/STOP` is the documented clean stop, and a watchdog
+# that undid it fifteen minutes later would make that instruction a lie. The
+# driver writes <out>/DONE once every job of the matrix is in summary.tsv; the
+# krenew is still revived until `stop`, since a replay may yet write there.
 cmd_ensure() {
     resolve_supervisor >/dev/null 2>&1 || exit 0
     # Bring back the campaign's krenew if it died, while its ticket still holds:
@@ -982,6 +984,7 @@ cmd_ensure() {
     is_running && exit 0
     [ -x "$(launcher)" ] || exit 0
     [ -f "$OUT/STOP" ] && exit 0
+    [ -f "$OUT/DONE" ] && exit 0
     start_supervised
 }
 

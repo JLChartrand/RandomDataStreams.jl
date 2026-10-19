@@ -697,7 +697,9 @@ directory that is removed when your last session ends; the script points
 your login shell and the one the watchdog looks for are the same session.
 
 The watchdog respects `touch <out>/STOP`: a campaign you stopped on purpose
-stays stopped. `stop` removes the crontab entry, and any crontab it edits is
+stays stopped. It also leaves a finished campaign alone: the driver writes
+`<out>/DONE` once every job of the matrix is in `summary.tsv`. `stop` removes
+the crontab entry, and any crontab it edits is
 backed up to `<out>/crontab.backup` first — your other cron jobs are never
 touched.
 

@@ -306,6 +306,11 @@ function status(opts)
     isfile(joinpath(out, "STOP")) && println("\nSTOP file present: the driver will not start new jobs.")
 end
 
+# Every job of the matrix is in the index. run-campaign.sh's watchdog reads this
+# file and leaves a finished campaign alone; without it, it started the driver
+# every fifteen minutes until `stop`, only to hear there was nothing to do.
+mark_done(out) = open(io -> println(io, now()), joinpath(out, "DONE"), "w")
+
 # Main -------------------------------------------------------------------------
 
 function main(args)
@@ -327,9 +332,11 @@ function main(args)
         status(opts); return
     end
     if isempty(todo)
+        mark_done(out)
         println("Nothing to do: every job in this matrix is already in $index.")
         return
     end
+    rm(joinpath(out, "DONE"); force = true)      # stale if a job left the index since
     opts["calibrate"] && (todo = todo[1:1])
 
     warn_if_dirty(PROV)
@@ -370,6 +377,7 @@ function main(args)
     end
 
     note(log, "campaign end")
+    all(j -> j ∈ finished(out), matrix(opts)) && mark_done(out)
     println()
     status(opts)
 end

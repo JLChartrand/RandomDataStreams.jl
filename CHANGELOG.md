@@ -6,6 +6,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The watchdog restarted a finished campaign every fifteen minutes**, until
+  `stop`, and each time the driver found nothing to do. The driver now writes
+  `<out>/DONE` once every job of the matrix is in `summary.tsv`, and
+  `run-campaign.sh ensure` leaves a campaign with that file alone, as it does
+  one with `STOP`. It still revives the campaign's `krenew`, since a replay may
+  yet write to the directory.
+
 ## [0.4.0]
 
 Normals and exponentials are drawn by inversion on every generator, with the
