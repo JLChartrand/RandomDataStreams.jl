@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1]
+
+The package itself does not change. The TestU01 harness corrects BigCrush's
+CollisionOver tests, the validation page gives its counts both ways, and the
+campaign watchdog leaves a finished campaign alone.
+
 ### Changed
 
 - **The TestU01 harness now corrects BigCrush's CollisionOver tests itself.**
@@ -511,7 +517,8 @@ Initial release: `MRG32k3a` and the xoshiro/xoroshiro families, with the stream
 and substream object model of L'Ecuyer et al. (2002). Registered on 2026-08-29
 from `6449bd8`, without a git tag; `v0.1.0` was added on 2026-10-18.
 
-[Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/e6376ae...v0.3.0
 [0.2.0]: https://github.com/JLChartrand/RandomDataStreams.jl/compare/6449bd8...e6376ae
